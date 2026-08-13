@@ -52,7 +52,7 @@ func decodeEnvelope(data []byte) (rpcEnvelope, error) {
 func encodeResult(result rpcResult) []byte {
 	data, err := json.Marshal(result)
 	if err != nil {
-		// rpcResult only contains JSON-safe framework-owned fields.
+		// rpcResult 仅包含框架定义且可安全进行 JSON 编码的字段。
 		return []byte(`{"error":"encode rpc result"}`)
 	}
 	return data

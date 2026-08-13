@@ -8,8 +8,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config describes every node in a deployment. A process selects one entry by
-// passing its node ID to NewNode.
+// Config 描述一次部署中的所有节点。进程通过向 NewNode 传入节点 ID，
+// 从配置中选择当前节点。
 type Config struct {
 	MainNode int          `yaml:"main_node"`
 	Codec    string       `yaml:"codec,omitempty"`
@@ -28,9 +28,8 @@ type ServiceConfig struct {
 	Options map[string]any `yaml:"options,omitempty"`
 }
 
-// LoadConfig reads and structurally validates a YAML configuration file.
-// Factory availability is checked by NewNode because factories are supplied
-// by the application at runtime.
+// LoadConfig 读取 YAML 配置文件并校验其结构。
+// 由于服务工厂由应用程序在运行时提供，因此工厂可用性由 NewNode 校验。
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

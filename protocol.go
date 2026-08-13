@@ -10,8 +10,8 @@ import (
 	xtencoding "xtnet/encoding"
 )
 
-// Message is the unit delivered between services. Payload must match the type
-// registered for ID in the selected codec's MessageRegistry.
+// Message 是服务之间传递的基本消息单元。
+// Payload 的类型必须与当前编解码器 MessageRegistry 中为该 ID 注册的类型一致。
 type Message struct {
 	ID      uint32
 	Payload any

@@ -35,8 +35,8 @@ var xtnetLoggerOnce sync.Once
 func ensureXTNetLogger() {
 	xtnetLoggerOnce.Do(func() {
 		if xtnet.GetLogger() == nil {
-			// xtnet assumes a process-wide logger is always present. Keep its
-			// fallback silent; applications may install their own logger first.
+			// xtnet 假定进程中始终存在全局日志记录器。这里提供一个静默的
+			// 默认实现；应用程序可以在创建 Node 前安装自己的日志记录器。
 			xtnet.SetLogger(xtlog.NewLogger(".", xtlog.FileSizeMin, false, false))
 		}
 	})
@@ -84,8 +84,8 @@ type serviceRuntime struct {
 	registered bool
 }
 
-// Node is one framework process. RPCClients and LocalService are exposed for
-// observability and should be treated as read-only by applications.
+// Node 表示一个框架进程。RPCClients 和 LocalService 用于观察运行状态，
+// 应用程序应将它们视为只读成员。
 type Node struct {
 	ID           int
 	MainNodeID   int
@@ -287,9 +287,9 @@ func (n *Node) startService(runtime *serviceRuntime) error {
 	return nil
 }
 
-// startFrameLoop queues a barrier before Run starts. Besides reporting
-// readiness, this establishes a happens-before relationship around xtnet's
-// non-atomic Loop status field, so the first network Post cannot race Run.
+// startFrameLoop 在 Run 启动前向队列放入一个屏障任务。该任务既用于确认
+// Loop 已就绪，也会围绕 xtnet 非原子的 Loop 状态字段建立 happens-before
+// 关系，避免第一次网络 Post 与 Run 发生数据竞争。
 func startFrameLoop(loop *frame.Loop, wg *sync.WaitGroup) {
 	ready := make(chan struct{})
 	loop.Post(func() { close(ready) })
