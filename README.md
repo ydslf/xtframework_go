@@ -71,6 +71,10 @@ _ = node.Start()
 defer node.Stop()
 ```
 
+`Node` 的运行状态和内部容器均由框架管理。可通过 `ID()`、`MainNodeID()`、
+`ListenAddr()`、`LocalService()`、`LocalServices()`、`RegisteredService()` 等
+只读方法查询，不应直接修改 Node 内部的 Service、注册表或 RPC 连接。
+
 完整示例见 [`examples/basic`](examples/basic)，进一步说明见 [`docs/quickstart.md`](docs/quickstart.md)。
 
 ## 验证

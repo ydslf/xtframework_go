@@ -84,17 +84,17 @@ type serviceRuntime struct {
 	registered bool
 }
 
-// Node 表示一个框架进程。RPCClients 和 LocalService 用于观察运行状态，
-// 应用程序应将它们视为只读成员。
+// Node 表示一个框架进程。Node 的运行状态由框架内部管理，应用程序通过
+// 只读方法查询节点信息和服务信息。
 type Node struct {
-	ID           int
-	MainNodeID   int
-	LocalService map[ServiceKey]Service
-	Registry     ServiceRegistry
-	RPCServer    xtnetNet.IServer
-	RPCClients   map[int]*RPCClient
-	Messages     *MessageRegistry
-	Codec        Codec
+	id            int
+	mainNodeID    int
+	localServices map[ServiceKey]Service
+	registry      ServiceRegistry
+	rpcServer     xtnetNet.IServer
+	rpcClients    map[int]*RPCClient
+	messages      *MessageRegistry
+	codec         Codec
 
 	config         *Config
 	nodeConfig     NodeConfig
@@ -167,13 +167,13 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	}
 
 	node := &Node{
-		ID:             nodeID,
-		MainNodeID:     config.MainNode,
-		LocalService:   make(map[ServiceKey]Service),
-		Registry:       options.registry,
-		RPCClients:     make(map[int]*RPCClient),
-		Messages:       options.messages,
-		Codec:          options.codec,
+		id:             nodeID,
+		mainNodeID:     config.MainNode,
+		localServices:  make(map[ServiceKey]Service),
+		registry:       options.registry,
+		rpcClients:     make(map[int]*RPCClient),
+		messages:       options.messages,
+		codec:          options.codec,
 		config:         config,
 		nodeConfig:     nodeConfig,
 		factories:      options.factories,
@@ -206,14 +206,61 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 			return nil, fmt.Errorf("services %s and %s share one loop", owner, key)
 		}
 		loops[service.Loop()] = key
-		node.LocalService[key] = service
+		node.localServices[key] = service
 		node.services[key] = &serviceRuntime{service: service}
 		node.serviceOrder = append(node.serviceOrder, key)
 	}
 	return node, nil
 }
 
-func (n *Node) IsMainNode() bool { return n.ID == n.MainNodeID }
+// ID 返回当前节点 ID。
+func (n *Node) ID() int { return n.id }
+
+// MainNodeID 返回主节点 ID。
+func (n *Node) MainNodeID() int { return n.mainNodeID }
+
+// ListenAddr 返回当前节点的内部 RPC 监听地址。
+func (n *Node) ListenAddr() string { return n.nodeConfig.ListenAddr }
+
+// CodecName 返回当前节点使用的业务消息编解码器名称。
+func (n *Node) CodecName() string { return n.codec.Name() }
+
+// IsMainNode 表示当前节点是否为主节点。
+func (n *Node) IsMainNode() bool { return n.id == n.mainNodeID }
+
+// LocalService 查询当前节点上的一个 Service。
+func (n *Node) LocalService(key ServiceKey) (Service, bool) {
+	service, exists := n.localServices[key]
+	return service, exists
+}
+
+// LocalServices 返回当前节点全部 Service 的只读快照。修改返回的 map
+// 不会影响 Node 内部的 Service 容器。
+func (n *Node) LocalServices() map[ServiceKey]Service {
+	result := make(map[ServiceKey]Service, len(n.localServices))
+	for key, service := range n.localServices {
+		result[key] = service
+	}
+	return result
+}
+
+// RegisteredService 查询注册表中的一个 Service。非主节点默认只维护空的
+// 本地注册表，因此该方法主要用于观察主节点状态。
+func (n *Node) RegisteredService(key ServiceKey) (ServiceLocation, bool) {
+	return n.registry.Lookup(key)
+}
+
+// RegisteredServices 返回当前注册表的 Service 快照。
+func (n *Node) RegisteredServices() []ServiceLocation {
+	return n.registry.List()
+}
+
+// RPCClientCount 返回当前缓存的节点间 RPC 客户端数量。
+func (n *Node) RPCClientCount() int {
+	n.clientsMu.Lock()
+	defer n.clientsMu.Unlock()
+	return len(n.rpcClients)
+}
 
 func (n *Node) Start() error {
 	if !n.state.CompareAndSwap(nodeStateInitial, nodeStateStarting) {
@@ -257,8 +304,8 @@ func (n *Node) startRPCServer() error {
 		delete(n.sessions, session)
 		n.sessionsMu.Unlock()
 		if n.IsMainNode() {
-			if nodeID, ok := session.GetUserData().(int); ok && nodeID != n.ID {
-				n.Registry.UnregisterNode(nodeID)
+			if nodeID, ok := session.GetUserData().(int); ok && nodeID != n.id {
+				n.registry.UnregisterNode(nodeID)
 			}
 		}
 	}
@@ -269,9 +316,9 @@ func (n *Node) startRPCServer() error {
 	agent := serveragent.NewInternal(n.rpcLoop, binary.BigEndian)
 	agent.SetEventHandler(events)
 	agent.SetNetRpc(n.serverRPC)
-	n.RPCServer = tcp.NewServer(n.nodeConfig.ListenAddr, agent)
-	if !n.RPCServer.Start() {
-		return fmt.Errorf("start node %d rpc server at %s", n.ID, n.nodeConfig.ListenAddr)
+	n.rpcServer = tcp.NewServer(n.nodeConfig.ListenAddr, agent)
+	if !n.rpcServer.Start() {
+		return fmt.Errorf("start node %d rpc server at %s", n.id, n.nodeConfig.ListenAddr)
 	}
 	return nil
 }
@@ -287,9 +334,8 @@ func (n *Node) startService(runtime *serviceRuntime) error {
 	return nil
 }
 
-// startFrameLoop 在 Run 启动前向队列放入一个屏障任务。该任务既用于确认
-// Loop 已就绪，也会围绕 xtnet 非原子的 Loop 状态字段建立 happens-before
-// 关系，避免第一次网络 Post 与 Run 发生数据竞争。
+// startFrameLoop 启动 Loop，并等待 Loop 真正开始处理队列任务。
+// 函数返回后，可以确认 Loop 已进入运行状态并能够处理后续的 Post。
 func startFrameLoop(loop *frame.Loop, wg *sync.WaitGroup) {
 	ready := make(chan struct{})
 	loop.Post(func() { close(ready) })
@@ -318,11 +364,11 @@ func (n *Node) registerService(key ServiceKey) error {
 	location := ServiceLocation{
 		ServiceName: key.Name,
 		ServiceID:   key.ID,
-		NodeID:      n.ID,
+		NodeID:      n.id,
 		NodeAddr:    n.nodeConfig.ListenAddr,
 	}
 	if n.IsMainNode() {
-		return n.Registry.Register(location)
+		return n.registry.Register(location)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), n.connectTimeout)
 	defer cancel()
@@ -330,13 +376,13 @@ func (n *Node) registerService(key ServiceKey) error {
 	if err != nil {
 		return err
 	}
-	_, err = client.request(ctx, rpcEnvelope{Operation: opRegister, SourceNode: n.ID, Location: &location})
+	_, err = client.request(ctx, rpcEnvelope{Operation: opRegister, SourceNode: n.id, Location: &location})
 	return err
 }
 
 func (n *Node) unregisterService(key ServiceKey) error {
 	if n.IsMainNode() {
-		return n.Registry.Unregister(key, n.ID)
+		return n.registry.Unregister(key, n.id)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), n.connectTimeout)
 	defer cancel()
@@ -344,7 +390,7 @@ func (n *Node) unregisterService(key ServiceKey) error {
 	if err != nil {
 		return err
 	}
-	_, err = client.request(ctx, rpcEnvelope{Operation: opUnregister, SourceNode: n.ID, Target: key})
+	_, err = client.request(ctx, rpcEnvelope{Operation: opUnregister, SourceNode: n.id, Target: key})
 	return err
 }
 
@@ -359,11 +405,11 @@ func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
 	if msg == nil || msg.ID == 0 || msg.Payload == nil {
 		return ErrInvalidMessage
 	}
-	if _, local := n.LocalService[target]; local {
+	if _, local := n.localServices[target]; local {
 		return n.dispatchLocal(context.Background(), source, target, msg, false, nil)
 	}
 
-	payload, err := n.Codec.Encode(msg)
+	payload, err := n.codec.Encode(msg)
 	if err != nil {
 		return err
 	}
@@ -376,7 +422,7 @@ func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
 		return err
 	}
 	return client.send(rpcEnvelope{
-		Operation: opDeliver, SourceNode: n.ID, Source: source, Target: target, Payload: payload,
+		Operation: opDeliver, SourceNode: n.id, Source: source, Target: target, Payload: payload,
 	})
 }
 
@@ -394,7 +440,7 @@ func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *
 	if req == nil || req.ID == 0 || req.Payload == nil {
 		return nil, ErrInvalidMessage
 	}
-	if _, local := n.LocalService[target]; local {
+	if _, local := n.localServices[target]; local {
 		type localResponse struct {
 			message *Message
 			err     error
@@ -415,7 +461,7 @@ func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *
 		}
 	}
 
-	payload, err := n.Codec.Encode(req)
+	payload, err := n.codec.Encode(req)
 	if err != nil {
 		return nil, err
 	}
@@ -428,20 +474,20 @@ func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *
 		return nil, err
 	}
 	result, err := client.request(ctx, rpcEnvelope{
-		Operation: opDeliver, SourceNode: n.ID, Source: source, Target: target, Payload: payload,
+		Operation: opDeliver, SourceNode: n.id, Source: source, Target: target, Payload: payload,
 	})
 	if err != nil {
 		return nil, err
 	}
 	var response Message
-	if err := n.Codec.Decode(result.Payload, &response); err != nil {
+	if err := n.codec.Decode(result.Payload, &response); err != nil {
 		return nil, err
 	}
 	return &response, nil
 }
 
 func (n *Node) dispatchLocal(ctx context.Context, source, target ServiceKey, msg *Message, request bool, responder func(*Message, error) error) error {
-	service, exists := n.LocalService[target]
+	service, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
 	}
@@ -480,7 +526,7 @@ func (n *Node) dispatchLocal(ctx context.Context, source, target ServiceKey, msg
 
 func (n *Node) lookupService(key ServiceKey) (ServiceLocation, error) {
 	if n.IsMainNode() {
-		if location, exists := n.Registry.Lookup(key); exists {
+		if location, exists := n.registry.Lookup(key); exists {
 			return location, nil
 		}
 		return ServiceLocation{}, fmt.Errorf("%w: %s", ErrServiceNotFound, key)
@@ -491,7 +537,7 @@ func (n *Node) lookupService(key ServiceKey) (ServiceLocation, error) {
 	if err != nil {
 		return ServiceLocation{}, err
 	}
-	result, err := client.request(ctx, rpcEnvelope{Operation: opLookup, SourceNode: n.ID, Target: key})
+	result, err := client.request(ctx, rpcEnvelope{Operation: opLookup, SourceNode: n.id, Target: key})
 	if err != nil {
 		return ServiceLocation{}, err
 	}
@@ -502,39 +548,39 @@ func (n *Node) lookupService(key ServiceKey) (ServiceLocation, error) {
 }
 
 func (n *Node) mainClient() (*RPCClient, error) {
-	mainConfig, exists := n.config.Node(n.MainNodeID)
+	mainConfig, exists := n.config.Node(n.mainNodeID)
 	if !exists {
-		return nil, fmt.Errorf("%w: main node %d", ErrNodeNotFound, n.MainNodeID)
+		return nil, fmt.Errorf("%w: main node %d", ErrNodeNotFound, n.mainNodeID)
 	}
 	return n.getRPCClient(mainConfig.ID, mainConfig.ListenAddr)
 }
 
 func (n *Node) getRPCClient(nodeID int, addr string) (*RPCClient, error) {
-	if nodeID == n.ID {
+	if nodeID == n.id {
 		return nil, fmt.Errorf("cannot create an rpc client to local node %d", nodeID)
 	}
 	n.clientsMu.Lock()
 	defer n.clientsMu.Unlock()
-	if current := n.RPCClients[nodeID]; current != nil {
+	if current := n.rpcClients[nodeID]; current != nil {
 		if current.Connected() && current.Addr() == addr {
 			return current, nil
 		}
 		current.Close()
-		delete(n.RPCClients, nodeID)
+		delete(n.rpcClients, nodeID)
 	}
 	client, err := newRPCClient(n, nodeID, addr)
 	if err != nil {
 		return nil, err
 	}
-	n.RPCClients[nodeID] = client
+	n.rpcClients[nodeID] = client
 	return client, nil
 }
 
 func (n *Node) removeRPCClient(nodeID int, client *RPCClient) {
 	n.clientsMu.Lock()
 	defer n.clientsMu.Unlock()
-	if n.RPCClients[nodeID] == client {
-		delete(n.RPCClients, nodeID)
+	if n.rpcClients[nodeID] == client {
+		delete(n.rpcClients, nodeID)
 	}
 }
 
@@ -550,7 +596,7 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 		return
 	}
 	var message Message
-	if err := n.Codec.Decode(envelope.Payload, &message); err != nil {
+	if err := n.codec.Decode(envelope.Payload, &message); err != nil {
 		n.report(err)
 		return
 	}
@@ -569,29 +615,29 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 	switch envelope.Operation {
 	case opRegister:
 		if !n.IsMainNode() {
-			err = fmt.Errorf("node %d is not the main node", n.ID)
+			err = fmt.Errorf("node %d is not the main node", n.id)
 		} else if envelope.Location == nil {
 			err = fmt.Errorf("register request has no location")
 		} else if envelope.Location.NodeID != envelope.SourceNode {
 			err = fmt.Errorf("register source node mismatch")
 		} else {
-			err = n.Registry.Register(*envelope.Location)
+			err = n.registry.Register(*envelope.Location)
 		}
 		n.respondRPCError(session, contextID, err)
 	case opUnregister:
 		if !n.IsMainNode() {
-			err = fmt.Errorf("node %d is not the main node", n.ID)
+			err = fmt.Errorf("node %d is not the main node", n.id)
 		} else {
-			err = n.Registry.Unregister(envelope.Target, envelope.SourceNode)
+			err = n.registry.Unregister(envelope.Target, envelope.SourceNode)
 		}
 		n.respondRPCError(session, contextID, err)
 	case opLookup:
 		if !n.IsMainNode() {
-			err = fmt.Errorf("node %d is not the main node", n.ID)
+			err = fmt.Errorf("node %d is not the main node", n.id)
 			n.respondRPCError(session, contextID, err)
 			return
 		}
-		location, found := n.Registry.Lookup(envelope.Target)
+		location, found := n.registry.Lookup(envelope.Target)
 		if !found {
 			n.respondRPCError(session, contextID, fmt.Errorf("%w: %s", ErrServiceNotFound, envelope.Target))
 			return
@@ -599,7 +645,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 		n.respondRPC(session, contextID, rpcResult{Location: &location})
 	case opDeliver:
 		var message Message
-		if err := n.Codec.Decode(envelope.Payload, &message); err != nil {
+		if err := n.codec.Decode(envelope.Payload, &message); err != nil {
 			n.respondRPCError(session, contextID, err)
 			return
 		}
@@ -608,7 +654,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
 			}
-			payload, encodeErr := n.Codec.Encode(response)
+			payload, encodeErr := n.codec.Encode(response)
 			if encodeErr != nil {
 				n.respondRPCError(session, contextID, encodeErr)
 				return encodeErr
@@ -713,11 +759,11 @@ func (n *Node) stopService(runtime *serviceRuntime) error {
 
 func (n *Node) closeNetwork() {
 	n.clientsMu.Lock()
-	clients := make([]*RPCClient, 0, len(n.RPCClients))
-	for _, client := range n.RPCClients {
+	clients := make([]*RPCClient, 0, len(n.rpcClients))
+	for _, client := range n.rpcClients {
 		clients = append(clients, client)
 	}
-	n.RPCClients = make(map[int]*RPCClient)
+	n.rpcClients = make(map[int]*RPCClient)
 	n.clientsMu.Unlock()
 	for _, client := range clients {
 		client.Close()
@@ -733,9 +779,9 @@ func (n *Node) closeNetwork() {
 	for _, session := range sessions {
 		session.Close(false)
 	}
-	if n.RPCServer != nil {
-		n.RPCServer.Close()
-		n.RPCServer = nil
+	if n.rpcServer != nil {
+		n.rpcServer.Close()
+		n.rpcServer = nil
 	}
 }
 

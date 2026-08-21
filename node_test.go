@@ -42,7 +42,7 @@ type serviceCollector struct {
 func (c *serviceCollector) factory(node *Node, config ServiceConfig) (Service, error) {
 	service := &frameworkTestService{BaseService: NewBaseService(node, config), received: make(chan string, 8)}
 	c.mu.Lock()
-	c.services[fmt.Sprintf("%d/%s:%d", node.ID, config.Name, config.ID)] = service
+	c.services[fmt.Sprintf("%d/%s:%d", node.ID(), config.Name, config.ID)] = service
 	c.mu.Unlock()
 	return service, nil
 }
@@ -113,10 +113,21 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mainNode.LocalService[ServiceKey{Name: "center", ID: 1}].Loop() == roomNode.LocalService[ServiceKey{Name: "room", ID: 1}].Loop() {
+	center, centerFound := mainNode.LocalService(ServiceKey{Name: "center", ID: 1})
+	room1Service, room1Found := roomNode.LocalService(ServiceKey{Name: "room", ID: 1})
+	room2Service, room2Found := roomNode.LocalService(ServiceKey{Name: "room", ID: 2})
+	if !centerFound || !room1Found || !room2Found {
+		t.Fatal("expected local services were not found")
+	}
+	localSnapshot := roomNode.LocalServices()
+	delete(localSnapshot, ServiceKey{Name: "room", ID: 1})
+	if _, found := roomNode.LocalService(ServiceKey{Name: "room", ID: 1}); !found {
+		t.Fatal("modifying LocalServices snapshot changed the node container")
+	}
+	if center.Loop() == room1Service.Loop() {
 		t.Fatal("services unexpectedly share a loop")
 	}
-	if roomNode.LocalService[ServiceKey{Name: "room", ID: 1}].Loop() == roomNode.LocalService[ServiceKey{Name: "room", ID: 2}].Loop() {
+	if room1Service.Loop() == room2Service.Loop() {
 		t.Fatal("services in one node share a loop")
 	}
 
@@ -175,7 +186,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	roomStopped = true
-	if _, found := mainNode.Registry.Lookup(ServiceKey{Name: "room", ID: 1}); found {
+	if _, found := mainNode.RegisteredService(ServiceKey{Name: "room", ID: 1}); found {
 		t.Fatal("room service remains registered after node stop")
 	}
 }
@@ -219,7 +230,7 @@ func TestNodeStartRollsBackRegisteredServices(t *testing.T) {
 	if err := secondNode.Start(); !errors.Is(err, ErrServiceExists) {
 		t.Fatalf("Start() error = %v, want ErrServiceExists", err)
 	}
-	if _, found := mainNode.Registry.Lookup(ServiceKey{Name: "room", ID: 1}); found {
+	if _, found := mainNode.RegisteredService(ServiceKey{Name: "room", ID: 1}); found {
 		t.Fatal("service registered before startup failure was not rolled back")
 	}
 }

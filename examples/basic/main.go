@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -70,7 +69,7 @@ func main() {
 	if err := node.Start(); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("node %d is listening at %s", node.ID, configAddress(config, node.ID))
+	log.Printf("node %d is listening at %s", node.ID(), node.ListenAddr())
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -78,12 +77,4 @@ func main() {
 	if err := node.Stop(); err != nil {
 		log.Printf("stop node: %v", err)
 	}
-}
-
-func configAddress(config *xtframework.Config, nodeID int) string {
-	node, ok := config.Node(nodeID)
-	if !ok {
-		return fmt.Sprintf("unknown node %d", nodeID)
-	}
-	return node.ListenAddr
 }
