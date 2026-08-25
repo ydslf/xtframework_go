@@ -30,6 +30,8 @@ const (
 	nodeStateStopped
 )
 
+const defaultRouteCacheTTL = 30 * time.Second
+
 var xtnetLoggerOnce sync.Once
 
 func ensureXTNetLogger() {
@@ -48,6 +50,7 @@ type nodeOptions struct {
 	codec          Codec
 	registry       ServiceRegistry
 	connectTimeout time.Duration
+	routeCacheTTL  time.Duration
 	errorHandler   func(error)
 }
 
@@ -71,6 +74,12 @@ func WithServiceRegistry(registry ServiceRegistry) NodeOption {
 
 func WithConnectTimeout(timeout time.Duration) NodeOption {
 	return func(options *nodeOptions) { options.connectTimeout = timeout }
+}
+
+// WithRouteCacheTTL 设置非主节点的 Service 路由缓存有效期。设置为 0
+// 可以禁用路由缓存；默认有效期为 30 秒。
+func WithRouteCacheTTL(ttl time.Duration) NodeOption {
+	return func(options *nodeOptions) { options.routeCacheTTL = ttl }
 }
 
 func WithErrorHandler(handler func(error)) NodeOption {
@@ -100,6 +109,7 @@ type Node struct {
 	nodeConfig     NodeConfig
 	factories      *FactoryRegistry
 	connectTimeout time.Duration
+	routeCache     *serviceRouteCache
 	errorHandler   func(error)
 
 	state atomic.Int32
@@ -131,6 +141,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		messages:       NewMessageRegistry(),
 		registry:       NewMemoryRegistry(),
 		connectTimeout: 5 * time.Second,
+		routeCacheTTL:  defaultRouteCacheTTL,
 		errorHandler: func(err error) {
 			log.Printf("xtframework: %v", err)
 		},
@@ -151,6 +162,9 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	}
 	if options.connectTimeout <= 0 {
 		return nil, fmt.Errorf("connect timeout must be positive")
+	}
+	if options.routeCacheTTL < 0 {
+		return nil, fmt.Errorf("route cache TTL must not be negative")
 	}
 	if options.errorHandler == nil {
 		options.errorHandler = func(error) {}
@@ -178,6 +192,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		nodeConfig:     nodeConfig,
 		factories:      options.factories,
 		connectTimeout: options.connectTimeout,
+		routeCache:     newServiceRouteCache(options.routeCacheTTL),
 		errorHandler:   options.errorHandler,
 		rpcLoop:        frame.NewLoop(frame.LoopSizeMin, true),
 		services:       make(map[ServiceKey]*serviceRuntime),
@@ -419,11 +434,16 @@ func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
 	}
 	client, err := n.getRPCClient(location.NodeID, location.NodeAddr)
 	if err != nil {
+		n.routeCache.invalidate(target)
 		return err
 	}
-	return client.send(rpcEnvelope{
+	err = client.send(rpcEnvelope{
 		Operation: opDeliver, SourceNode: n.id, Source: source, Target: target, Payload: payload,
 	})
+	if err != nil {
+		n.routeCache.invalidate(target)
+	}
+	return err
 }
 
 func (n *Node) CallService(ctx context.Context, serviceName string, serviceID int, req *Message) (*Message, error) {
@@ -471,12 +491,16 @@ func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *
 	}
 	client, err := n.getRPCClient(location.NodeID, location.NodeAddr)
 	if err != nil {
+		n.routeCache.invalidate(target)
 		return nil, err
 	}
 	result, err := client.request(ctx, rpcEnvelope{
 		Operation: opDeliver, SourceNode: n.id, Source: source, Target: target, Payload: payload,
 	})
 	if err != nil {
+		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
+			n.routeCache.invalidate(target)
+		}
 		return nil, err
 	}
 	var response Message
@@ -531,6 +555,12 @@ func (n *Node) lookupService(key ServiceKey) (ServiceLocation, error) {
 		}
 		return ServiceLocation{}, fmt.Errorf("%w: %s", ErrServiceNotFound, key)
 	}
+	return n.routeCache.lookup(key, func() (ServiceLocation, error) {
+		return n.lookupServiceFromMain(key)
+	})
+}
+
+func (n *Node) lookupServiceFromMain(key ServiceKey) (ServiceLocation, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), n.connectTimeout)
 	defer cancel()
 	client, err := n.mainClient()

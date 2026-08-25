@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -37,6 +38,16 @@ func (s *frameworkTestService) HandleMessage(ctx *MessageContext, msg *Message) 
 type serviceCollector struct {
 	mu       sync.Mutex
 	services map[string]*frameworkTestService
+}
+
+type countingRegistry struct {
+	*MemoryRegistry
+	lookups atomic.Int32
+}
+
+func (r *countingRegistry) Lookup(key ServiceKey) (ServiceLocation, bool) {
+	r.lookups.Add(1)
+	return r.MemoryRegistry.Lookup(key)
 }
 
 func (c *serviceCollector) factory(node *Node, config ServiceConfig) (Service, error) {
@@ -86,6 +97,17 @@ func waitMessage(t *testing.T, ch <-chan string, want string) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timed out waiting for %q", want)
+	}
+}
+
+func waitUntil(t *testing.T, condition func() bool, description string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", description)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -186,6 +208,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	roomStopped = true
+	waitUntil(t, func() bool { return mainNode.RPCClientCount() == 0 }, "main node to release the stopped room node connection")
 	if _, found := mainNode.RegisteredService(ServiceKey{Name: "room", ID: 1}); found {
 		t.Fatal("room service remains registered after node stop")
 	}
@@ -232,5 +255,56 @@ func TestNodeStartRollsBackRegisteredServices(t *testing.T) {
 	}
 	if _, found := mainNode.RegisteredService(ServiceKey{Name: "room", ID: 1}); found {
 		t.Fatal("service registered before startup failure was not rolled back")
+	}
+}
+
+func TestNodeCachesRemoteServiceLocation(t *testing.T) {
+	collector := &serviceCollector{services: make(map[string]*frameworkTestService)}
+	factories := NewFactoryRegistry()
+	if err := factories.Register("center", collector.factory); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		MainNode: 1,
+		Nodes: []NodeConfig{
+			{ID: 1, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "center", ID: 1}}},
+			{ID: 2, ListenAddr: freeAddress(t)},
+		},
+	}
+	registry := &countingRegistry{MemoryRegistry: NewMemoryRegistry()}
+	mainNode, err := NewNode(cfg, 1,
+		WithFactoryRegistry(factories),
+		WithMessageRegistry(testMessages(t)),
+		WithServiceRegistry(registry),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderNode, err := NewNode(cfg, 2,
+		WithFactoryRegistry(factories),
+		WithMessageRegistry(testMessages(t)),
+		WithRouteCacheTTL(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mainNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mainNode.Stop() })
+	if err := senderNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = senderNode.Stop() })
+
+	center := collector.get(1, "center", 1)
+	for _, text := range []string{"first", "second"} {
+		if err := senderNode.Send2Service("center", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: text}}); err != nil {
+			t.Fatal(err)
+		}
+		waitMessage(t, center.received, text)
+	}
+	if got := registry.lookups.Load(); got != 1 {
+		t.Fatalf("main node lookup count = %d, want 1", got)
 	}
 }

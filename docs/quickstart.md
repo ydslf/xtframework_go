@@ -52,6 +52,8 @@ Node 间 RPC 头和框架控制消息不受业务 Codec 影响。一个 Node 实
 
 - 本地目标：直接投递到目标 Service Loop。
 - 远程目标：向主 Node 查询 `ServiceLocation`，然后复用或创建到目标 Node 的 TCP 连接。
+- 非主 Node 默认缓存 Service 路由 30 秒；可用 `WithRouteCacheTTL` 调整，设置为 `0` 可禁用。
+- 同一 Service 的并发缓存未命中只会触发一次主节点查询；路由相关发送错误会使缓存失效。
 - Service 停止时主动注销；Node 异常断开时，主 Node 根据连接关联的 Node ID 清理其注册项。
 - TCP 断开后，下一次发送会重新创建连接；本次在途调用由调用方 Context 超时结束。
 - 注册表不持久化，也没有主 Node 高可用能力。
