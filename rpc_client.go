@@ -1,7 +1,6 @@
 package xtframework
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"sync"
@@ -45,7 +44,7 @@ func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
 		node.removeRPCClient(nodeID, c)
 	}
 
-	netRPC := rpc.NewNoSync(node.rpcLoop)
+	netRPC := rpc.NewSync(node.rpcLoop)
 	netRPC.SetOnRpcDirect(func(net.ISession, *packet.ReadPacket) {})
 	netRPC.SetOnRpcRequest(func(net.ISession, int32, *packet.ReadPacket) {})
 	agent := clientagent.NewInternal(node.rpcLoop, binary.BigEndian)
@@ -73,27 +72,21 @@ func (c *RPCClient) Addr() string    { return c.addr }
 func (c *RPCClient) Connected() bool { return c.connected.Load() }
 
 func (c *RPCClient) send(envelope rpcEnvelope) error {
-	if !c.connected.Load() || c.client.GetSession() == nil {
+	session := c.client.GetSession()
+	if !c.connected.Load() || session == nil {
 		return ErrRPCDisconnected
 	}
 	data, err := encodeEnvelope(envelope)
 	if err != nil {
 		return err
 	}
-	done := make(chan error, 1)
-	c.node.postRPC(func() {
-		if !c.connected.Load() || c.client.GetSession() == nil {
-			done <- ErrRPCDisconnected
-			return
-		}
-		c.netRPC.SendDirect(c.client.GetSession(), writePacket(data))
-		done <- nil
-	})
-	return <-done
+	c.netRPC.SendDirect(session, writePacket(data))
+	return nil
 }
 
-func (c *RPCClient) request(ctx context.Context, envelope rpcEnvelope) (rpcResult, error) {
-	if !c.connected.Load() || c.client.GetSession() == nil {
+func (c *RPCClient) request(expireMS time.Duration, envelope rpcEnvelope) (rpcResult, error) {
+	session := c.client.GetSession()
+	if !c.connected.Load() || session == nil {
 		return rpcResult{}, ErrRPCDisconnected
 	}
 	data, err := encodeEnvelope(envelope)
@@ -101,33 +94,11 @@ func (c *RPCClient) request(ctx context.Context, envelope rpcEnvelope) (rpcResul
 		return rpcResult{}, err
 	}
 
-	type response struct {
-		result rpcResult
-		err    error
-	}
-	responses := make(chan response, 1)
-	posted := make(chan error, 1)
-	c.node.postRPC(func() {
-		if !c.connected.Load() || c.client.GetSession() == nil {
-			posted <- ErrRPCDisconnected
-			return
-		}
-		c.netRPC.RequestAsync(c.client.GetSession(), writePacket(data), func(rpk *packet.ReadPacket) {
-			result, decodeErr := decodeResult(rpk.GetCurData())
-			responses <- response{result: result, err: decodeErr}
-		})
-		posted <- nil
-	})
-	if err := <-posted; err != nil {
+	rpk, err := c.netRPC.RequestSync(session, writePacket(data), expireMS)
+	if err != nil {
 		return rpcResult{}, err
 	}
-
-	select {
-	case response := <-responses:
-		return response.result, response.err
-	case <-ctx.Done():
-		return rpcResult{}, ctx.Err()
-	}
+	return decodeResult(rpk.GetCurData())
 }
 
 func (c *RPCClient) Close() {

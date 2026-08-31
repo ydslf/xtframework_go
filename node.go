@@ -385,13 +385,11 @@ func (n *Node) registerService(key ServiceKey) error {
 	if n.IsMainNode() {
 		return n.registry.Register(location)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), n.connectTimeout)
-	defer cancel()
 	client, err := n.mainClient()
 	if err != nil {
 		return err
 	}
-	_, err = client.request(ctx, rpcEnvelope{Operation: opRegister, SourceNode: n.id, Location: &location})
+	_, err = client.request(n.connectTimeout, rpcEnvelope{Operation: opRegister, SourceNode: n.id, Location: &location})
 	return err
 }
 
@@ -399,13 +397,11 @@ func (n *Node) unregisterService(key ServiceKey) error {
 	if n.IsMainNode() {
 		return n.registry.Unregister(key, n.id)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), n.connectTimeout)
-	defer cancel()
 	client, err := n.mainClient()
 	if err != nil {
 		return err
 	}
-	_, err = client.request(ctx, rpcEnvelope{Operation: opUnregister, SourceNode: n.id, Target: key})
+	_, err = client.request(n.connectTimeout, rpcEnvelope{Operation: opUnregister, SourceNode: n.id, Target: key})
 	return err
 }
 
@@ -494,7 +490,17 @@ func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *
 		n.routeCache.invalidate(target)
 		return nil, err
 	}
-	result, err := client.request(ctx, rpcEnvelope{
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	expireMS := n.connectTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		expireMS = time.Until(deadline)
+		if expireMS <= 0 {
+			return nil, ctx.Err()
+		}
+	}
+	result, err := client.request(expireMS, rpcEnvelope{
 		Operation: opDeliver, SourceNode: n.id, Source: source, Target: target, Payload: payload,
 	})
 	if err != nil {
@@ -561,13 +567,11 @@ func (n *Node) lookupService(key ServiceKey) (ServiceLocation, error) {
 }
 
 func (n *Node) lookupServiceFromMain(key ServiceKey) (ServiceLocation, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), n.connectTimeout)
-	defer cancel()
 	client, err := n.mainClient()
 	if err != nil {
 		return ServiceLocation{}, err
 	}
-	result, err := client.request(ctx, rpcEnvelope{Operation: opLookup, SourceNode: n.id, Target: key})
+	result, err := client.request(n.connectTimeout, rpcEnvelope{Operation: opLookup, SourceNode: n.id, Target: key})
 	if err != nil {
 		return ServiceLocation{}, err
 	}
