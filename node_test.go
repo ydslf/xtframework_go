@@ -1,7 +1,6 @@
 package xtframework
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -178,9 +177,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	waitMessage(t, room1.received, "remote")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	response, err := mainNode.CallService(ctx, "room", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "call"}})
+	response, err := mainNode.CallService(3*time.Second, "room", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "call"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +186,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	waitMessage(t, room1.received, "call")
 
-	response, err = roomNode.CallService(ctx, "room", 2, &Message{ID: testRequestID, Payload: &testPayload{Text: "local-call"}})
+	response, err = roomNode.CallService(3*time.Second, "room", 2, &Message{ID: testRequestID, Payload: &testPayload{Text: "local-call"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,10 +194,10 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 		t.Fatalf("local response = %q", got)
 	}
 
-	if _, err := mainNode.CallService(ctx, "missing", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "missing"}}); !errors.Is(err, ErrServiceNotFound) {
+	if _, err := mainNode.CallService(3*time.Second, "missing", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "missing"}}); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("missing service error = %v", err)
 	}
-	if _, err := roomNode.CallService(ctx, "missing", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "missing-remote"}}); !errors.Is(err, ErrServiceNotFound) {
+	if _, err := roomNode.CallService(3*time.Second, "missing", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "missing-remote"}}); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("remote missing service error = %v", err)
 	}
 

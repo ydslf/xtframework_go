@@ -28,10 +28,7 @@ err := service.Send2Service("room", 1, &xtframework.Message{
 请求响应：
 
 ```go
-ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-defer cancel()
-
-reply, err := service.CallService(ctx, "center", 1, request)
+reply, err := service.CallService(2*time.Second, "center", 1, request)
 ```
 
 目标 Service 必须在 `HandleMessage` 内调用一次 `ctx.Respond`。未响应、重复响应、处理器 panic 或返回错误都会转换为调用错误。`CallService` 会等待结果，因此不要在延迟敏感的 Service Loop 中进行长超时同步等待；可由业务层启动 goroutine，或封装自己的异步回调模式。

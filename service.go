@@ -1,10 +1,10 @@
 package xtframework
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"xtnet/frame"
 )
@@ -82,15 +82,14 @@ func (s *BaseService) Send2Service(serviceName string, serviceID int, msg *Messa
 	return s.node.send2Service(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, msg)
 }
 
-func (s *BaseService) CallService(ctx context.Context, serviceName string, serviceID int, req *Message) (*Message, error) {
+func (s *BaseService) CallService(expireMS time.Duration, serviceName string, serviceID int, req *Message) (*Message, error) {
 	if s.node == nil {
 		return nil, ErrNodeStopped
 	}
-	return s.node.callService(ctx, ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, req)
+	return s.node.callService(expireMS, ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, req)
 }
 
 type MessageContext struct {
-	context.Context
 	source    ServiceKey
 	target    ServiceKey
 	request   bool

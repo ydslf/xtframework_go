@@ -1,7 +1,6 @@
 package xtframework
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -417,7 +416,7 @@ func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
 		return ErrInvalidMessage
 	}
 	if _, local := n.localServices[target]; local {
-		return n.dispatchLocal(context.Background(), source, target, msg, false, nil)
+		return n.dispatchLocal(source, target, msg, false, nil)
 	}
 
 	payload, err := n.codec.Encode(msg)
@@ -442,16 +441,16 @@ func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
 	return err
 }
 
-func (n *Node) CallService(ctx context.Context, serviceName string, serviceID int, req *Message) (*Message, error) {
-	return n.callService(ctx, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, req)
+func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID int, req *Message) (*Message, error) {
+	return n.callService(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, req)
 }
 
-func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *Message) (*Message, error) {
+func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, req *Message) (*Message, error) {
 	if !n.operational() {
 		return nil, ErrNodeStopped
 	}
-	if ctx == nil {
-		ctx = context.Background()
+	if expireMS <= 0 {
+		return nil, fmt.Errorf("call service expiration must be positive")
 	}
 	if req == nil || req.ID == 0 || req.Payload == nil {
 		return nil, ErrInvalidMessage
@@ -462,18 +461,20 @@ func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *
 			err     error
 		}
 		responses := make(chan localResponse, 1)
-		err := n.dispatchLocal(ctx, source, target, req, true, func(message *Message, responseErr error) error {
+		err := n.dispatchLocal(source, target, req, true, func(message *Message, responseErr error) error {
 			responses <- localResponse{message: message, err: responseErr}
 			return nil
 		})
 		if err != nil {
 			return nil, err
 		}
+		timer := time.NewTimer(expireMS)
+		defer timer.Stop()
 		select {
 		case response := <-responses:
 			return response.message, response.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		case <-timer.C:
+			return nil, fmt.Errorf("call service %s: timeout after %s", target, expireMS)
 		}
 	}
 
@@ -489,16 +490,6 @@ func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *
 	if err != nil {
 		n.routeCache.invalidate(target)
 		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	expireMS := n.connectTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		expireMS = time.Until(deadline)
-		if expireMS <= 0 {
-			return nil, ctx.Err()
-		}
 	}
 	result, err := client.request(expireMS, rpcEnvelope{
 		Operation: opDeliver, SourceNode: n.id, Source: source, Target: target, Payload: payload,
@@ -516,13 +507,12 @@ func (n *Node) callService(ctx context.Context, source, target ServiceKey, req *
 	return &response, nil
 }
 
-func (n *Node) dispatchLocal(ctx context.Context, source, target ServiceKey, msg *Message, request bool, responder func(*Message, error) error) error {
+func (n *Node) dispatchLocal(source, target ServiceKey, msg *Message, request bool, responder func(*Message, error) error) error {
 	service, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
 	}
 	messageContext := &MessageContext{
-		Context: ctx,
 		source:  source,
 		target:  target,
 		request: request,
@@ -634,7 +624,7 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 		n.report(err)
 		return
 	}
-	if err := n.dispatchLocal(context.Background(), envelope.Source, envelope.Target, &message, false, nil); err != nil {
+	if err := n.dispatchLocal(envelope.Source, envelope.Target, &message, false, nil); err != nil {
 		n.report(err)
 	}
 }
@@ -683,7 +673,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, err)
 			return
 		}
-		err = n.dispatchLocal(context.Background(), envelope.Source, envelope.Target, &message, true, func(response *Message, responseErr error) error {
+		err = n.dispatchLocal(envelope.Source, envelope.Target, &message, true, func(response *Message, responseErr error) error {
 			if responseErr != nil {
 				n.respondRPCError(session, contextID, responseErr)
 				return nil

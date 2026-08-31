@@ -9,7 +9,7 @@
 - 本地 Service 通过 Loop 直接投递，远程 Service 通过 xtnet TCP RPC 通信。
 - 主 Node 维护内存服务注册表，其他 Node 查询后直连目标 Node。
 - 非主 Node 缓存主 Node 返回的 Service 路由，避免每条消息重复查询。
-- 支持异步单向 `Send2Service` 和带 `context.Context` 的 `CallService`。
+- 支持异步单向 `Send2Service` 和带超时时长的 `CallService`。
 - 业务消息支持 xtnet 二进制编码或 Protobuf 编码。
 
 ## 配置
