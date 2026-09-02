@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"xtframework/internal/rpcpb"
 	xtnet "xtnet"
 	"xtnet/frame"
 	xtlog "xtnet/log"
@@ -388,8 +389,11 @@ func (n *Node) registerService(key ServiceKey) error {
 	if err != nil {
 		return err
 	}
-	_, err = client.request(n.connectTimeout, rpcEnvelope{Operation: opRegister, SourceNode: n.id, Location: &location})
-	return err
+	request := &rpcpb.RegisterRequest{
+		SourceNode: int64(n.id),
+		Location:   serviceLocationToProto(location),
+	}
+	return client.request(n.connectTimeout, opRegister, request, &rpcpb.RegisterResponse{})
 }
 
 func (n *Node) unregisterService(key ServiceKey) error {
@@ -400,8 +404,11 @@ func (n *Node) unregisterService(key ServiceKey) error {
 	if err != nil {
 		return err
 	}
-	_, err = client.request(n.connectTimeout, rpcEnvelope{Operation: opUnregister, SourceNode: n.id, Target: key})
-	return err
+	request := &rpcpb.UnregisterRequest{
+		SourceNode: int64(n.id),
+		Target:     serviceKeyToProto(key),
+	}
+	return client.request(n.connectTimeout, opUnregister, request, &rpcpb.UnregisterResponse{})
 }
 
 func (n *Node) Send2Service(serviceName string, serviceID int, msg *Message) error {
@@ -432,8 +439,11 @@ func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
 		n.routeCache.invalidate(target)
 		return err
 	}
-	err = client.send(rpcEnvelope{
-		Operation: opDeliver, SourceNode: n.id, Source: source, Target: target, Payload: payload,
+	err = client.send(opDeliver, &rpcpb.DeliverRequest{
+		SourceNode: int64(n.id),
+		Source:     serviceKeyToProto(source),
+		Target:     serviceKeyToProto(target),
+		Payload:    payload,
 	})
 	if err != nil {
 		n.routeCache.invalidate(target)
@@ -491,9 +501,13 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, re
 		n.routeCache.invalidate(target)
 		return nil, err
 	}
-	result, err := client.request(expireMS, rpcEnvelope{
-		Operation: opDeliver, SourceNode: n.id, Source: source, Target: target, Payload: payload,
-	})
+	responseProtocol := &rpcpb.DeliverResponse{}
+	err = client.request(expireMS, opDeliver, &rpcpb.DeliverRequest{
+		SourceNode: int64(n.id),
+		Source:     serviceKeyToProto(source),
+		Target:     serviceKeyToProto(target),
+		Payload:    payload,
+	}, responseProtocol)
 	if err != nil {
 		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
 			n.routeCache.invalidate(target)
@@ -501,7 +515,7 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, re
 		return nil, err
 	}
 	var response Message
-	if err := n.codec.Decode(result.Payload, &response); err != nil {
+	if err := n.codec.Decode(responseProtocol.Payload, &response); err != nil {
 		return nil, err
 	}
 	return &response, nil
@@ -561,14 +575,22 @@ func (n *Node) lookupServiceFromMain(key ServiceKey) (ServiceLocation, error) {
 	if err != nil {
 		return ServiceLocation{}, err
 	}
-	result, err := client.request(n.connectTimeout, rpcEnvelope{Operation: opLookup, SourceNode: n.id, Target: key})
+	response := &rpcpb.LookupResponse{}
+	err = client.request(n.connectTimeout, opLookup, &rpcpb.LookupRequest{
+		SourceNode: int64(n.id),
+		Target:     serviceKeyToProto(key),
+	}, response)
 	if err != nil {
 		return ServiceLocation{}, err
 	}
-	if result.Location == nil {
+	if response.Location == nil {
 		return ServiceLocation{}, fmt.Errorf("%w: %s", ErrServiceNotFound, key)
 	}
-	return *result.Location, nil
+	location, err := requiredRPCServiceLocation(response.Location, "lookup response location")
+	if err != nil {
+		return ServiceLocation{}, rpcInvalidMessage(err)
+	}
+	return location, nil
 }
 
 func (n *Node) mainClient() (*RPCClient, error) {
@@ -614,17 +636,27 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 		n.report(err)
 		return
 	}
-	n.rememberSourceNode(session, envelope.SourceNode)
 	if envelope.Operation != opDeliver {
 		n.report(fmt.Errorf("unsupported direct rpc operation %d", envelope.Operation))
 		return
 	}
+	var request rpcpb.DeliverRequest
+	if err := decodeOperationPayload(envelope, opDeliver, &request); err != nil {
+		n.report(rpcInvalidMessage(err))
+		return
+	}
+	sourceNode, source, target, err := decodeDeliverRequest(&request)
+	if err != nil {
+		n.report(rpcInvalidMessage(err))
+		return
+	}
+	n.rememberSourceNode(session, sourceNode)
 	var message Message
-	if err := n.codec.Decode(envelope.Payload, &message); err != nil {
+	if err := n.codec.Decode(request.Payload, &message); err != nil {
 		n.report(err)
 		return
 	}
-	if err := n.dispatchLocal(envelope.Source, envelope.Target, &message, false, nil); err != nil {
+	if err := n.dispatchLocal(source, target, &message, false, nil); err != nil {
 		n.report(err)
 	}
 }
@@ -632,48 +664,114 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk *packet.ReadPacket) {
 	envelope, err := decodeEnvelope(rpk.GetCurData())
 	if err != nil {
-		n.respondRPC(session, contextID, rpcResult{Error: err.Error()})
+		n.respondRPCError(session, contextID, rpcInvalidMessage(err))
 		return
 	}
-	n.rememberSourceNode(session, envelope.SourceNode)
 	switch envelope.Operation {
 	case opRegister:
+		var request rpcpb.RegisterRequest
+		if decodeErr := decodeOperationPayload(envelope, opRegister, &request); decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		sourceNode, decodeErr := rpcSourceNode(request.SourceNode)
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		location, decodeErr := requiredRPCServiceLocation(request.Location, "register location")
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		n.rememberSourceNode(session, sourceNode)
 		if !n.IsMainNode() {
 			err = fmt.Errorf("node %d is not the main node", n.id)
-		} else if envelope.Location == nil {
-			err = fmt.Errorf("register request has no location")
-		} else if envelope.Location.NodeID != envelope.SourceNode {
+		} else if location.NodeID != sourceNode {
 			err = fmt.Errorf("register source node mismatch")
 		} else {
-			err = n.registry.Register(*envelope.Location)
+			err = n.registry.Register(location)
 		}
-		n.respondRPCError(session, contextID, err)
+		if err != nil {
+			n.respondRPCError(session, contextID, err)
+			return
+		}
+		_ = n.respondRPC(session, contextID, opRegister, &rpcpb.RegisterResponse{})
 	case opUnregister:
+		var request rpcpb.UnregisterRequest
+		if decodeErr := decodeOperationPayload(envelope, opUnregister, &request); decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		sourceNode, decodeErr := rpcSourceNode(request.SourceNode)
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		target, decodeErr := requiredRPCServiceKey(request.Target, "unregister target")
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		n.rememberSourceNode(session, sourceNode)
 		if !n.IsMainNode() {
 			err = fmt.Errorf("node %d is not the main node", n.id)
 		} else {
-			err = n.registry.Unregister(envelope.Target, envelope.SourceNode)
+			err = n.registry.Unregister(target, sourceNode)
 		}
-		n.respondRPCError(session, contextID, err)
+		if err != nil {
+			n.respondRPCError(session, contextID, err)
+			return
+		}
+		_ = n.respondRPC(session, contextID, opUnregister, &rpcpb.UnregisterResponse{})
 	case opLookup:
+		var request rpcpb.LookupRequest
+		if decodeErr := decodeOperationPayload(envelope, opLookup, &request); decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		sourceNode, decodeErr := rpcSourceNode(request.SourceNode)
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		target, decodeErr := requiredRPCServiceKey(request.Target, "lookup target")
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		n.rememberSourceNode(session, sourceNode)
 		if !n.IsMainNode() {
 			err = fmt.Errorf("node %d is not the main node", n.id)
 			n.respondRPCError(session, contextID, err)
 			return
 		}
-		location, found := n.registry.Lookup(envelope.Target)
+		location, found := n.registry.Lookup(target)
 		if !found {
-			n.respondRPCError(session, contextID, fmt.Errorf("%w: %s", ErrServiceNotFound, envelope.Target))
+			n.respondRPCError(session, contextID, fmt.Errorf("%w: %s", ErrServiceNotFound, target))
 			return
 		}
-		n.respondRPC(session, contextID, rpcResult{Location: &location})
+		_ = n.respondRPC(session, contextID, opLookup, &rpcpb.LookupResponse{
+			Location: serviceLocationToProto(location),
+		})
 	case opDeliver:
+		var request rpcpb.DeliverRequest
+		if decodeErr := decodeOperationPayload(envelope, opDeliver, &request); decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		sourceNode, source, target, decodeErr := decodeDeliverRequest(&request)
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		n.rememberSourceNode(session, sourceNode)
 		var message Message
-		if err := n.codec.Decode(envelope.Payload, &message); err != nil {
+		if err := n.codec.Decode(request.Payload, &message); err != nil {
 			n.respondRPCError(session, contextID, err)
 			return
 		}
-		err = n.dispatchLocal(envelope.Source, envelope.Target, &message, true, func(response *Message, responseErr error) error {
+		err = n.dispatchLocal(source, target, &message, true, func(response *Message, responseErr error) error {
 			if responseErr != nil {
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
@@ -683,8 +781,9 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 				n.respondRPCError(session, contextID, encodeErr)
 				return encodeErr
 			}
-			n.respondRPC(session, contextID, rpcResult{Payload: payload})
-			return nil
+			return n.respondRPC(session, contextID, opDeliver, &rpcpb.DeliverResponse{
+				Payload: payload,
+			})
 		})
 		if err != nil {
 			n.respondRPCError(session, contextID, err)
@@ -692,6 +791,65 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 	default:
 		n.respondRPCError(session, contextID, fmt.Errorf("unsupported rpc operation %d", envelope.Operation))
 	}
+}
+
+func decodeDeliverRequest(request *rpcpb.DeliverRequest) (int, ServiceKey, ServiceKey, error) {
+	sourceNode, err := rpcSourceNode(request.SourceNode)
+	if err != nil {
+		return 0, ServiceKey{}, ServiceKey{}, err
+	}
+	source, err := serviceKeyFromProto(request.Source)
+	if err != nil {
+		return 0, ServiceKey{}, ServiceKey{}, fmt.Errorf("deliver source: %w", err)
+	}
+	if source != (ServiceKey{}) && (source.Name == "" || source.ID <= 0) {
+		return 0, ServiceKey{}, ServiceKey{}, fmt.Errorf("deliver source is invalid: %s", source)
+	}
+	target, err := requiredRPCServiceKey(request.Target, "deliver target")
+	if err != nil {
+		return 0, ServiceKey{}, ServiceKey{}, err
+	}
+	if len(request.Payload) == 0 {
+		return 0, ServiceKey{}, ServiceKey{}, fmt.Errorf("deliver payload is empty")
+	}
+	return sourceNode, source, target, nil
+}
+
+func requiredRPCServiceKey(message *rpcpb.ServiceKey, name string) (ServiceKey, error) {
+	key, err := serviceKeyFromProto(message)
+	if err != nil {
+		return ServiceKey{}, fmt.Errorf("%s: %w", name, err)
+	}
+	if key.Name == "" || key.ID <= 0 {
+		return ServiceKey{}, fmt.Errorf("%s is invalid: %s", name, key)
+	}
+	return key, nil
+}
+
+func requiredRPCServiceLocation(message *rpcpb.ServiceLocation, name string) (ServiceLocation, error) {
+	location, err := serviceLocationFromProto(message)
+	if err != nil {
+		return ServiceLocation{}, fmt.Errorf("%s: %w", name, err)
+	}
+	if location.ServiceName == "" || location.ServiceID <= 0 || location.NodeID <= 0 || location.NodeAddr == "" {
+		return ServiceLocation{}, fmt.Errorf("%s is invalid: %+v", name, location)
+	}
+	return location, nil
+}
+
+func rpcSourceNode(value int64) (int, error) {
+	nodeID, err := rpcInt(value, "source node")
+	if err != nil {
+		return 0, err
+	}
+	if nodeID <= 0 {
+		return 0, fmt.Errorf("source node must be positive")
+	}
+	return nodeID, nil
+}
+
+func rpcInvalidMessage(err error) error {
+	return fmt.Errorf("%w: rpc protocol: %v", ErrInvalidMessage, err)
 }
 
 func (n *Node) rememberSourceNode(session xtnetNet.ISession, nodeID int) {
@@ -715,11 +873,22 @@ func (n *Node) respondRPCError(session xtnetNet.ISession, contextID int32, err e
 			result.Code = "invalid_message"
 		}
 	}
-	n.respondRPC(session, contextID, result)
+	data, encodeErr := encodeResult(result)
+	if encodeErr != nil {
+		n.report(encodeErr)
+		return
+	}
+	n.serverRPC.Respond(session, contextID, writePacket(data))
 }
 
-func (n *Node) respondRPC(session xtnetNet.ISession, contextID int32, result rpcResult) {
-	n.serverRPC.Respond(session, contextID, writePacket(encodeResult(result)))
+func (n *Node) respondRPC(session xtnetNet.ISession, contextID int32, op operation, response operationProtocol) error {
+	data, err := encodeOperationResult(op, response)
+	if err != nil {
+		n.report(err)
+		return err
+	}
+	n.serverRPC.Respond(session, contextID, writePacket(data))
+	return nil
 }
 
 func (n *Node) postRPC(call func()) {

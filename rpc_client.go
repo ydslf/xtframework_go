@@ -71,34 +71,39 @@ func (c *RPCClient) NodeID() int     { return c.nodeID }
 func (c *RPCClient) Addr() string    { return c.addr }
 func (c *RPCClient) Connected() bool { return c.connected.Load() }
 
-func (c *RPCClient) send(envelope rpcEnvelope) error {
+func (c *RPCClient) send(op operation, message operationProtocol) error {
 	session := c.client.GetSession()
 	if !c.connected.Load() || session == nil {
 		return ErrRPCDisconnected
 	}
-	data, err := encodeEnvelope(envelope)
+	data, err := encodeOperationEnvelope(op, message)
 	if err != nil {
 		return err
 	}
 	c.netRPC.SendDirect(session, writePacket(data))
+
 	return nil
 }
 
-func (c *RPCClient) request(expireMS time.Duration, envelope rpcEnvelope) (rpcResult, error) {
+func (c *RPCClient) request(expireMS time.Duration, op operation, request, response operationProtocol) error {
 	session := c.client.GetSession()
 	if !c.connected.Load() || session == nil {
-		return rpcResult{}, ErrRPCDisconnected
+		return ErrRPCDisconnected
 	}
-	data, err := encodeEnvelope(envelope)
+	data, err := encodeOperationEnvelope(op, request)
 	if err != nil {
-		return rpcResult{}, err
+		return err
 	}
 
 	rpk, err := c.netRPC.RequestSync(session, writePacket(data), expireMS)
 	if err != nil {
-		return rpcResult{}, err
+		return err
 	}
-	return decodeResult(rpk.GetCurData())
+	result, err := decodeResult(rpk.GetCurData())
+	if err != nil {
+		return err
+	}
+	return decodeResultPayload(result, op, response)
 }
 
 func (c *RPCClient) Close() {

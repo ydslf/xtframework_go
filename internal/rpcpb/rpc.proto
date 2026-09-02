@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package xtframework.rpc;
+
+option go_package = "xtframework/internal/rpcpb";
+
+enum RpcOperation {
+  RPC_OPERATION_UNSPECIFIED = 0;
+  RPC_OPERATION_REGISTER = 1;
+  RPC_OPERATION_UNREGISTER = 2;
+  RPC_OPERATION_LOOKUP = 3;
+  RPC_OPERATION_DELIVER = 4;
+}
+
+message RpcEnvelope {
+  RpcOperation operation = 1;
+  bytes payload = 2;
+}
+
+message RpcResult {
+  bytes payload = 1;
+  string error_code = 2;
+  string error_message = 3;
+}
+
+message ServiceKey {
+  string name = 1;
+  int64 id = 2;
+}
+
+message ServiceLocation {
+  string service_name = 1;
+  int64 service_id = 2;
+  int64 node_id = 3;
+  string node_addr = 4;
+}
+
+message RegisterRequest {
+  int64 source_node = 1;
+  ServiceLocation location = 2;
+}
+
+message RegisterResponse {}
+
+message UnregisterRequest {
+  int64 source_node = 1;
+  ServiceKey target = 2;
+}
+
+message UnregisterResponse {}
+
+message LookupRequest {
+  int64 source_node = 1;
+  ServiceKey target = 2;
+}
+
+message LookupResponse {
+  ServiceLocation location = 1;
+}
+
+message DeliverRequest {
+  int64 source_node = 1;
+  ServiceKey source = 2;
+  ServiceKey target = 3;
+  bytes payload = 4;
+}
+
+message DeliverResponse {
+  bytes payload = 1;
+}
