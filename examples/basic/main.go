@@ -14,7 +14,6 @@ import (
 
 const (
 	messagePing uint32 = 1001
-	messagePong uint32 = 1002
 )
 
 type ping struct{ Text string }
@@ -38,7 +37,7 @@ func (s *exampleService) HandleMessage(ctx *xtframework.MessageContext, messageI
 		if err != nil {
 			return err
 		}
-		return ctx.Respond(messagePong, response)
+		return ctx.Respond(response)
 	}
 	return nil
 }

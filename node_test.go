@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	testRequestID  uint32 = 1
-	testResponseID uint32 = 2
+	testRequestID uint32 = 1
 )
 
 type frameworkTestService struct {
@@ -30,7 +29,7 @@ func (s *frameworkTestService) HandleMessage(ctx *MessageContext, messageID uint
 	default:
 	}
 	if ctx.IsRequest() {
-		return ctx.Respond(testResponseID, []byte("reply:"+text))
+		return ctx.Respond([]byte("reply:" + text))
 	}
 	return nil
 }
@@ -167,33 +166,27 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	waitMessage(t, room1.received, "remote")
 
-	responseID, response, err := mainNode.CallService(3*time.Second, "room", 1, testRequestID, []byte("call"))
+	response, err := mainNode.CallService(3*time.Second, "room", 1, testRequestID, []byte("call"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if responseID != testResponseID {
-		t.Fatalf("response id = %d, want %d", responseID, testResponseID)
 	}
 	if got := string(response); got != "reply:call" {
 		t.Fatalf("response = %q", got)
 	}
 	waitMessage(t, room1.received, "call")
 
-	responseID, response, err = roomNode.CallService(3*time.Second, "room", 2, testRequestID, []byte("local-call"))
+	response, err = roomNode.CallService(3*time.Second, "room", 2, testRequestID, []byte("local-call"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if responseID != testResponseID {
-		t.Fatalf("local response id = %d, want %d", responseID, testResponseID)
 	}
 	if got := string(response); got != "reply:local-call" {
 		t.Fatalf("local response = %q", got)
 	}
 
-	if _, _, err := mainNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing")); !errors.Is(err, ErrServiceNotFound) {
+	if _, err := mainNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("missing service error = %v", err)
 	}
-	if _, _, err := roomNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing-remote")); !errors.Is(err, ErrServiceNotFound) {
+	if _, err := roomNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing-remote")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("remote missing service error = %v", err)
 	}
 

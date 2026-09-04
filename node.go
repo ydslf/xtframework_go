@@ -419,56 +419,55 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 	return err
 }
 
-func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) (uint32, []byte, error) {
+func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
 	return n.callService(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
 }
 
-func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, messageID uint32, payload []byte) (uint32, []byte, error) {
+func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, messageID uint32, payload []byte) ([]byte, error) {
 	if !n.operational() {
-		return 0, nil, ErrNodeStopped
+		return nil, ErrNodeStopped
 	}
 	if expireMS <= 0 {
-		return 0, nil, fmt.Errorf("call service expiration must be positive")
+		return nil, fmt.Errorf("call service expiration must be positive")
 	}
 	if messageID == 0 {
-		return 0, nil, ErrInvalidMessage
+		return nil, ErrInvalidMessage
 	}
 	if _, local := n.localServices[target]; local {
 		type localResponse struct {
-			messageID uint32
-			payload   []byte
-			err       error
+			payload []byte
+			err     error
 		}
 		responses := make(chan localResponse, 1)
-		err := n.dispatchLocal(source, target, messageID, clonePayload(payload), true, func(responseID uint32, responsePayload []byte, responseErr error) error {
-			responses <- localResponse{messageID: responseID, payload: responsePayload, err: responseErr}
+		err := n.dispatchLocal(source, target, messageID, clonePayload(payload), true, func(responsePayload []byte, responseErr error) error {
+			responses <- localResponse{payload: responsePayload, err: responseErr}
 			return nil
 		})
 		if err != nil {
-			return 0, nil, err
+			return nil, err
 		}
 		timer := time.NewTimer(expireMS)
 		defer timer.Stop()
 		select {
 		case response := <-responses:
-			return response.messageID, response.payload, response.err
+			return response.payload, response.err
 		case <-timer.C:
-			return 0, nil, fmt.Errorf("call service %s: timeout after %s", target, expireMS)
+			return nil, fmt.Errorf("call service %s: timeout after %s", target, expireMS)
 		}
 	}
 
 	wirePayload, err := encodeMessage(messageID, payload)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	location, err := n.lookupService(target)
 	if err != nil {
-		return 0, nil, err
+		return nil, err
 	}
 	client, err := n.getRPCClient(location.NodeID, location.NodeAddr)
 	if err != nil {
 		n.routeCache.invalidate(target)
-		return 0, nil, err
+		return nil, err
 	}
 	responseProtocol := &rpcpb.DeliverResponse{}
 	err = client.request(expireMS, opDeliver, &rpcpb.DeliverRequest{
@@ -481,12 +480,12 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
 			n.routeCache.invalidate(target)
 		}
-		return 0, nil, err
+		return nil, err
 	}
-	return decodeMessage(responseProtocol.Payload)
+	return responseProtocol.Payload, nil
 }
 
-func (n *Node) dispatchLocal(source, target ServiceKey, messageID uint32, payload []byte, request bool, responder func(uint32, []byte, error) error) error {
+func (n *Node) dispatchLocal(source, target ServiceKey, messageID uint32, payload []byte, request bool, responder func([]byte, error) error) error {
 	service, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
@@ -502,7 +501,7 @@ func (n *Node) dispatchLocal(source, target ServiceKey, messageID uint32, payloa
 			if recovered := recover(); recovered != nil {
 				err := fmt.Errorf("service %s panic: %v\n%s", target, recovered, debug.Stack())
 				if request && !messageContext.responded.Load() {
-					_ = messageContext.respondWithError(0, nil, err)
+					_ = messageContext.respondWithError(nil, err)
 				} else {
 					n.report(err)
 				}
@@ -513,7 +512,7 @@ func (n *Node) dispatchLocal(source, target ServiceKey, messageID uint32, payloa
 			if err == nil {
 				err = fmt.Errorf("service %s returned without responding", target)
 			}
-			if responseErr := messageContext.respondWithError(0, nil, err); responseErr != nil {
+			if responseErr := messageContext.respondWithError(nil, err); responseErr != nil {
 				n.report(responseErr)
 			}
 		} else if err != nil {
@@ -736,18 +735,13 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, decodeErr)
 			return
 		}
-		err = n.dispatchLocal(source, target, messageID, payload, true, func(responseID uint32, responsePayload []byte, responseErr error) error {
+		err = n.dispatchLocal(source, target, messageID, payload, true, func(responsePayload []byte, responseErr error) error {
 			if responseErr != nil {
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
 			}
-			wirePayload, encodeErr := encodeMessage(responseID, responsePayload)
-			if encodeErr != nil {
-				n.respondRPCError(session, contextID, encodeErr)
-				return encodeErr
-			}
 			return n.respondRPC(session, contextID, opDeliver, &rpcpb.DeliverResponse{
-				Payload: wirePayload,
+				Payload: responsePayload,
 			})
 		})
 		if err != nil {

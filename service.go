@@ -82,9 +82,9 @@ func (s *BaseService) Send2Service(serviceName string, serviceID int, messageID 
 	return s.node.send2Service(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
 }
 
-func (s *BaseService) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) (uint32, []byte, error) {
+func (s *BaseService) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
 	if s.node == nil {
-		return 0, nil, ErrNodeStopped
+		return nil, ErrNodeStopped
 	}
 	return s.node.callService(expireMS, ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
 }
@@ -94,26 +94,23 @@ type MessageContext struct {
 	target    ServiceKey
 	request   bool
 	responded atomic.Bool
-	respond   func(uint32, []byte, error) error
+	respond   func([]byte, error) error
 }
 
 func (c *MessageContext) Source() ServiceKey { return c.source }
 func (c *MessageContext) Target() ServiceKey { return c.target }
 func (c *MessageContext) IsRequest() bool    { return c.request }
 
-func (c *MessageContext) Respond(messageID uint32, payload []byte) error {
-	return c.respondWithError(messageID, payload, nil)
+func (c *MessageContext) Respond(payload []byte) error {
+	return c.respondWithError(payload, nil)
 }
 
-func (c *MessageContext) respondWithError(messageID uint32, payload []byte, responseErr error) error {
+func (c *MessageContext) respondWithError(payload []byte, responseErr error) error {
 	if !c.request || c.respond == nil {
 		return ErrNotRequest
-	}
-	if responseErr == nil && messageID == 0 {
-		return ErrInvalidMessage
 	}
 	if !c.responded.CompareAndSwap(false, true) {
 		return ErrAlreadyResponded
 	}
-	return c.respond(messageID, clonePayload(payload), responseErr)
+	return c.respond(clonePayload(payload), responseErr)
 }

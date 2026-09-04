@@ -52,7 +52,7 @@ func (s *Echo) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, 
 		if err != nil {
 			return err
 		}
-		return ctx.Respond(2, response)
+		return ctx.Respond(response)
 	}
     return nil
 }
