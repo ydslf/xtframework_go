@@ -75,6 +75,7 @@ func (s *BaseService) HandleMessage(*MessageContext, uint32, []byte) error {
 	return fmt.Errorf("service %s:%d does not handle messages", s.Name(), s.ID())
 }
 
+// Send2Service 异步发送一条业务消息。调用后，调用者不得再修改或复用 payload。
 func (s *BaseService) Send2Service(serviceName string, serviceID int, messageID uint32, payload []byte) error {
 	if s.node == nil {
 		return ErrNodeStopped
@@ -101,6 +102,7 @@ func (c *MessageContext) Source() ServiceKey { return c.source }
 func (c *MessageContext) Target() ServiceKey { return c.target }
 func (c *MessageContext) IsRequest() bool    { return c.request }
 
+// Respond 返回请求结果。调用后，调用者不得再修改或复用 payload。
 func (c *MessageContext) Respond(payload []byte) error {
 	return c.respondWithError(payload, nil)
 }
@@ -112,5 +114,5 @@ func (c *MessageContext) respondWithError(payload []byte, responseErr error) err
 	if !c.responded.CompareAndSwap(false, true) {
 		return ErrAlreadyResponded
 	}
-	return c.respond(clonePayload(payload), responseErr)
+	return c.respond(payload, responseErr)
 }

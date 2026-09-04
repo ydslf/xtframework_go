@@ -27,7 +27,3 @@ func decodeMessage(data []byte) (uint32, []byte, error) {
 	}
 	return id, data[4:], nil
 }
-
-func clonePayload(payload []byte) []byte {
-	return append([]byte(nil), payload...)
-}

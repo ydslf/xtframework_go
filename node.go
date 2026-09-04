@@ -379,6 +379,7 @@ func (n *Node) unregisterService(key ServiceKey) error {
 	return client.request(n.connectTimeout, opUnregister, request, &rpcpb.UnregisterResponse{})
 }
 
+// Send2Service 异步发送一条业务消息。调用后，调用者不得再修改或复用 payload。
 func (n *Node) Send2Service(serviceName string, serviceID int, messageID uint32, payload []byte) error {
 	return n.send2Service(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
 }
@@ -391,7 +392,7 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 		return ErrInvalidMessage
 	}
 	if _, local := n.localServices[target]; local {
-		return n.dispatchLocal(source, target, messageID, clonePayload(payload), false, nil)
+		return n.dispatchLocal(source, target, messageID, payload, false, nil)
 	}
 
 	wirePayload, err := encodeMessage(messageID, payload)
@@ -439,7 +440,7 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 			err     error
 		}
 		responses := make(chan localResponse, 1)
-		err := n.dispatchLocal(source, target, messageID, clonePayload(payload), true, func(responsePayload []byte, responseErr error) error {
+		err := n.dispatchLocal(source, target, messageID, payload, true, func(responsePayload []byte, responseErr error) error {
 			responses <- localResponse{payload: responsePayload, err: responseErr}
 			return nil
 		})

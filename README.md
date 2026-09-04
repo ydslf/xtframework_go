@@ -11,6 +11,7 @@
 - 非主 Node 缓存主 Node 返回的 Service 路由，避免每条消息重复查询。
 - 支持异步单向 `Send2Service` 和带超时时长的 `CallService`。
 - 框架传输业务消息号和原始字节，序列化格式由应用层决定。
+- 框架不复制业务负载；调用 `Send2Service` 或 `Respond` 后不得修改或复用传入切片。
 
 ## 配置
 

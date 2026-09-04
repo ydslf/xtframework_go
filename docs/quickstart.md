@@ -14,7 +14,7 @@
 
 每个 Service 必须拥有不同的 `*frame.Loop`。推荐嵌入 `BaseService`，它已提供身份、Loop、配置以及 `Send2Service`、`CallService` 方法。
 
-框架只识别 `uint32` 业务消息号并传输 `[]byte` 负载。应用负责使用 Protobuf、JSON 或其他格式编码和解码；空负载是合法消息，消息号 `0` 保留为无效值。
+框架只识别 `uint32` 业务消息号并传输 `[]byte` 负载。应用负责使用 Protobuf、JSON 或其他格式编码和解码；空负载是合法消息，消息号 `0` 保留为无效值。框架不会复制业务负载；调用 `Send2Service` 或 `Respond` 后，调用者不得再修改或复用传入的切片。
 
 单向发送：
 
@@ -55,7 +55,7 @@ func (s *Room) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, 
 }
 ```
 
-Node 间 RPC 信封和框架控制消息仍由框架内部编码，与业务负载格式无关。本地投递也使用字节负载，并复制切片以避免发送方后续修改造成数据竞态。
+Node 间 RPC 信封和框架控制消息仍由框架内部编码，与业务负载格式无关。本地投递直接传递业务字节切片，因此应用必须遵守负载所有权约定。
 
 ## 路由与故障语义
 
