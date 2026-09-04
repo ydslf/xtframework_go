@@ -10,13 +10,12 @@
 - 主 Node 维护内存服务注册表，其他 Node 查询后直连目标 Node。
 - 非主 Node 缓存主 Node 返回的 Service 路由，避免每条消息重复查询。
 - 支持异步单向 `Send2Service` 和带超时时长的 `CallService`。
-- 业务消息支持 xtnet 二进制编码或 Protobuf 编码。
+- 框架传输业务消息号和原始字节，序列化格式由应用层决定。
 
 ## 配置
 
 ```yaml
 main_node: 1
-codec: xtnet
 
 nodes:
   - id: 1
@@ -43,15 +42,23 @@ type Echo struct {
     xtframework.BaseService
 }
 
-func (s *Echo) HandleMessage(ctx *xtframework.MessageContext, msg *xtframework.Message) error {
-    if ctx.IsRequest() {
-        return ctx.Respond(&xtframework.Message{ID: 2, Payload: &Reply{Text: "ok"}})
-    }
+func (s *Echo) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+	var request Request
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return err
+	}
+	if ctx.IsRequest() {
+		response, err := json.Marshal(&Reply{Text: "ok"})
+		if err != nil {
+			return err
+		}
+		return ctx.Respond(2, response)
+	}
     return nil
 }
 ```
 
-在创建 Node 前注册 Service 工厂和业务消息类型：
+在创建 Node 前注册 Service 工厂：
 
 ```go
 factories := xtframework.NewFactoryRegistry()
@@ -59,14 +66,9 @@ _ = factories.Register("echo", func(node *xtframework.Node, cfg xtframework.Serv
     return &Echo{BaseService: xtframework.NewBaseService(node, cfg)}, nil
 })
 
-messages := xtframework.NewMessageRegistry()
-_ = messages.Register(1, func() any { return &Request{} })
-_ = messages.Register(2, func() any { return &Reply{} })
-
 cfg, _ := xtframework.LoadConfig("nodes.yaml")
 node, _ := xtframework.NewNode(cfg, 1,
     xtframework.WithFactoryRegistry(factories),
-    xtframework.WithMessageRegistry(messages),
 )
 _ = node.Start()
 defer node.Stop()

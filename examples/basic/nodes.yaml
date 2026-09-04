@@ -1,6 +1,4 @@
 main_node: 1
-codec: xtnet
-
 nodes:
   - id: 1
     listen_addr: "127.0.0.1:7001"

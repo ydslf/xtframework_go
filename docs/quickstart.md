@@ -14,36 +14,48 @@
 
 每个 Service 必须拥有不同的 `*frame.Loop`。推荐嵌入 `BaseService`，它已提供身份、Loop、配置以及 `Send2Service`、`CallService` 方法。
 
-`Message.ID` 是业务协议号，`Payload` 是已注册的具体消息指针。远程消息必须在发送和接收 Node 的 `MessageRegistry` 中使用相同 ID 注册相同结构。
+框架只识别 `uint32` 业务消息号并传输 `[]byte` 负载。应用负责使用 Protobuf、JSON 或其他格式编码和解码；空负载是合法消息，消息号 `0` 保留为无效值。
 
 单向发送：
 
 ```go
-err := service.Send2Service("room", 1, &xtframework.Message{
-    ID:      1001,
-    Payload: &PlayerEnter{PlayerID: 42},
-})
+payload, err := proto.Marshal(&gamepb.PlayerEnter{PlayerId: 42})
+if err == nil {
+    err = service.Send2Service("room", 1, 1001, payload)
+}
 ```
 
 请求响应：
 
 ```go
-reply, err := service.CallService(2*time.Second, "center", 1, request)
+replyID, replyPayload, err := service.CallService(
+    2*time.Second, "center", 1, 1001, requestPayload,
+)
 ```
 
-目标 Service 必须在 `HandleMessage` 内调用一次 `ctx.Respond`。未响应、重复响应、处理器 panic 或返回错误都会转换为调用错误。`CallService` 会等待结果，因此不要在延迟敏感的 Service Loop 中进行长超时同步等待；可由业务层启动 goroutine，或封装自己的异步回调模式。
+目标 Service 必须在 `HandleMessage` 内调用一次 `ctx.Respond(replyID, replyPayload)`。未响应、重复响应、处理器 panic 或返回错误都会转换为调用错误。`CallService` 会等待结果，因此不要在延迟敏感的 Service Loop 中进行长超时同步等待；可由业务层启动 goroutine，或封装自己的异步回调模式。
 
-## Codec
+## 应用层编解码
 
-配置 `codec: xtnet` 时，消息体使用 `xtnet/encoding`，工厂应返回可由该编码器处理的结构体指针。
-
-配置 `codec: protobuf` 时，消息工厂必须返回实现 `proto.Message` 的生成类型：
+Service 收到消息号和原始负载后自行解码：
 
 ```go
-messages.Register(1001, func() any { return &gamepb.PlayerEnter{} })
+func (s *Room) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+    switch messageID {
+    case 1001:
+        var request gamepb.PlayerEnter
+        if err := proto.Unmarshal(payload, &request); err != nil {
+            return err
+        }
+        // 处理 request
+        return nil
+    default:
+        return fmt.Errorf("unknown message id %d", messageID)
+    }
+}
 ```
 
-Node 间 RPC 头和框架控制消息不受业务 Codec 影响。一个 Node 实例只能选择一个业务 Codec，同一集群应保持一致。
+Node 间 RPC 信封和框架控制消息仍由框架内部编码，与业务负载格式无关。本地投递也使用字节负载，并复制切片以避免发送方后续修改造成数据竞态。
 
 ## 路由与故障语义
 

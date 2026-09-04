@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -22,11 +24,21 @@ type exampleService struct {
 	xtframework.BaseService
 }
 
-func (s *exampleService) HandleMessage(ctx *xtframework.MessageContext, message *xtframework.Message) error {
-	request := message.Payload.(*ping)
+func (s *exampleService) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+	if messageID != messagePing {
+		return fmt.Errorf("unknown message id %d", messageID)
+	}
+	var request ping
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return err
+	}
 	log.Printf("service %s:%d received %q from %s", s.Name(), s.ID(), request.Text, ctx.Source())
 	if ctx.IsRequest() {
-		return ctx.Respond(&xtframework.Message{ID: messagePong, Payload: &pong{Text: "pong: " + request.Text}})
+		response, err := json.Marshal(&pong{Text: "pong: " + request.Text})
+		if err != nil {
+			return err
+		}
+		return ctx.Respond(messagePong, response)
 	}
 	return nil
 }
@@ -51,17 +63,8 @@ func main() {
 		}
 	}
 
-	messages := xtframework.NewMessageRegistry()
-	if err := messages.Register(messagePing, func() any { return &ping{} }); err != nil {
-		log.Fatal(err)
-	}
-	if err := messages.Register(messagePong, func() any { return &pong{} }); err != nil {
-		log.Fatal(err)
-	}
-
 	node, err := xtframework.NewNode(config, *nodeID,
 		xtframework.WithFactoryRegistry(factories),
-		xtframework.WithMessageRegistry(messages),
 	)
 	if err != nil {
 		log.Fatal(err)

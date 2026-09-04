@@ -12,7 +12,6 @@ import (
 // 从配置中选择当前节点。
 type Config struct {
 	MainNode int          `yaml:"main_node"`
-	Codec    string       `yaml:"codec,omitempty"`
 	Nodes    []NodeConfig `yaml:"nodes"`
 }
 

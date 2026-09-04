@@ -48,7 +48,7 @@ func TestConfigValidate(t *testing.T) {
 
 func TestLoadConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.yaml")
-	data := []byte("main_node: 1\ncodec: xtnet\nnodes:\n  - id: 1\n    listen_addr: 127.0.0.1:7001\n    services:\n      - name: center\n        id: 1\n")
+	data := []byte("main_node: 1\nnodes:\n  - id: 1\n    listen_addr: 127.0.0.1:7001\n    services:\n      - name: center\n        id: 1\n")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MainNode != 1 || cfg.Codec != "xtnet" || len(cfg.Nodes) != 1 {
+	if cfg.MainNode != 1 || len(cfg.Nodes) != 1 {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }

@@ -46,8 +46,6 @@ func ensureXTNetLogger() {
 
 type nodeOptions struct {
 	factories      *FactoryRegistry
-	messages       *MessageRegistry
-	codec          Codec
 	registry       ServiceRegistry
 	connectTimeout time.Duration
 	routeCacheTTL  time.Duration
@@ -58,14 +56,6 @@ type NodeOption func(*nodeOptions)
 
 func WithFactoryRegistry(registry *FactoryRegistry) NodeOption {
 	return func(options *nodeOptions) { options.factories = registry }
-}
-
-func WithMessageRegistry(registry *MessageRegistry) NodeOption {
-	return func(options *nodeOptions) { options.messages = registry }
-}
-
-func WithCodec(codec Codec) NodeOption {
-	return func(options *nodeOptions) { options.codec = codec }
 }
 
 func WithServiceRegistry(registry ServiceRegistry) NodeOption {
@@ -101,9 +91,6 @@ type Node struct {
 	localServices map[ServiceKey]Service
 	registry      ServiceRegistry
 	rpcServer     xtnetNet.IServer
-	rpcClients    map[int]*RPCClient
-	messages      *MessageRegistry
-	codec         Codec
 
 	config         *Config
 	nodeConfig     NodeConfig
@@ -121,6 +108,7 @@ type Node struct {
 	services      map[ServiceKey]*serviceRuntime
 	serviceOrder  []ServiceKey
 	clientsMu     sync.Mutex
+	rpcClients    map[int]*RPCClient
 	sessionsMu    sync.Mutex
 	sessions      map[xtnetNet.ISession]struct{}
 	shutdownMutex sync.Mutex
@@ -138,7 +126,6 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 
 	options := nodeOptions{
 		factories:      defaultFactories,
-		messages:       NewMessageRegistry(),
 		registry:       NewMemoryRegistry(),
 		connectTimeout: 5 * time.Second,
 		routeCacheTTL:  defaultRouteCacheTTL,
@@ -154,9 +141,6 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	if options.factories == nil {
 		return nil, fmt.Errorf("factory registry is nil")
 	}
-	if options.messages == nil {
-		return nil, fmt.Errorf("message registry is nil")
-	}
 	if options.registry == nil {
 		return nil, fmt.Errorf("service registry is nil")
 	}
@@ -169,25 +153,12 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	if options.errorHandler == nil {
 		options.errorHandler = func(error) {}
 	}
-	if options.codec == nil {
-		switch config.Codec {
-		case "", "xtnet":
-			options.codec = NewXTNetCodec(options.messages)
-		case "protobuf", "proto":
-			options.codec = NewProtoCodec(options.messages)
-		default:
-			return nil, fmt.Errorf("unsupported codec %q", config.Codec)
-		}
-	}
-
 	node := &Node{
 		id:             nodeID,
 		mainNodeID:     config.MainNode,
 		localServices:  make(map[ServiceKey]Service),
 		registry:       options.registry,
 		rpcClients:     make(map[int]*RPCClient),
-		messages:       options.messages,
-		codec:          options.codec,
 		config:         config,
 		nodeConfig:     nodeConfig,
 		factories:      options.factories,
@@ -236,9 +207,6 @@ func (n *Node) MainNodeID() int { return n.mainNodeID }
 
 // ListenAddr 返回当前节点的内部 RPC 监听地址。
 func (n *Node) ListenAddr() string { return n.nodeConfig.ListenAddr }
-
-// CodecName 返回当前节点使用的业务消息编解码器名称。
-func (n *Node) CodecName() string { return n.codec.Name() }
 
 // IsMainNode 表示当前节点是否为主节点。
 func (n *Node) IsMainNode() bool { return n.id == n.mainNodeID }
@@ -411,22 +379,22 @@ func (n *Node) unregisterService(key ServiceKey) error {
 	return client.request(n.connectTimeout, opUnregister, request, &rpcpb.UnregisterResponse{})
 }
 
-func (n *Node) Send2Service(serviceName string, serviceID int, msg *Message) error {
-	return n.send2Service(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, msg)
+func (n *Node) Send2Service(serviceName string, serviceID int, messageID uint32, payload []byte) error {
+	return n.send2Service(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
 }
 
-func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
+func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload []byte) error {
 	if !n.operational() {
 		return ErrNodeStopped
 	}
-	if msg == nil || msg.ID == 0 || msg.Payload == nil {
+	if messageID == 0 {
 		return ErrInvalidMessage
 	}
 	if _, local := n.localServices[target]; local {
-		return n.dispatchLocal(source, target, msg, false, nil)
+		return n.dispatchLocal(source, target, messageID, clonePayload(payload), false, nil)
 	}
 
-	payload, err := n.codec.Encode(msg)
+	wirePayload, err := encodeMessage(messageID, payload)
 	if err != nil {
 		return err
 	}
@@ -443,7 +411,7 @@ func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
 		SourceNode: int64(n.id),
 		Source:     serviceKeyToProto(source),
 		Target:     serviceKeyToProto(target),
-		Payload:    payload,
+		Payload:    wirePayload,
 	})
 	if err != nil {
 		n.routeCache.invalidate(target)
@@ -451,77 +419,74 @@ func (n *Node) send2Service(source, target ServiceKey, msg *Message) error {
 	return err
 }
 
-func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID int, req *Message) (*Message, error) {
-	return n.callService(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, req)
+func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) (uint32, []byte, error) {
+	return n.callService(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
 }
 
-func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, req *Message) (*Message, error) {
+func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, messageID uint32, payload []byte) (uint32, []byte, error) {
 	if !n.operational() {
-		return nil, ErrNodeStopped
+		return 0, nil, ErrNodeStopped
 	}
 	if expireMS <= 0 {
-		return nil, fmt.Errorf("call service expiration must be positive")
+		return 0, nil, fmt.Errorf("call service expiration must be positive")
 	}
-	if req == nil || req.ID == 0 || req.Payload == nil {
-		return nil, ErrInvalidMessage
+	if messageID == 0 {
+		return 0, nil, ErrInvalidMessage
 	}
 	if _, local := n.localServices[target]; local {
 		type localResponse struct {
-			message *Message
-			err     error
+			messageID uint32
+			payload   []byte
+			err       error
 		}
 		responses := make(chan localResponse, 1)
-		err := n.dispatchLocal(source, target, req, true, func(message *Message, responseErr error) error {
-			responses <- localResponse{message: message, err: responseErr}
+		err := n.dispatchLocal(source, target, messageID, clonePayload(payload), true, func(responseID uint32, responsePayload []byte, responseErr error) error {
+			responses <- localResponse{messageID: responseID, payload: responsePayload, err: responseErr}
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 		timer := time.NewTimer(expireMS)
 		defer timer.Stop()
 		select {
 		case response := <-responses:
-			return response.message, response.err
+			return response.messageID, response.payload, response.err
 		case <-timer.C:
-			return nil, fmt.Errorf("call service %s: timeout after %s", target, expireMS)
+			return 0, nil, fmt.Errorf("call service %s: timeout after %s", target, expireMS)
 		}
 	}
 
-	payload, err := n.codec.Encode(req)
+	wirePayload, err := encodeMessage(messageID, payload)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	location, err := n.lookupService(target)
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	client, err := n.getRPCClient(location.NodeID, location.NodeAddr)
 	if err != nil {
 		n.routeCache.invalidate(target)
-		return nil, err
+		return 0, nil, err
 	}
 	responseProtocol := &rpcpb.DeliverResponse{}
 	err = client.request(expireMS, opDeliver, &rpcpb.DeliverRequest{
 		SourceNode: int64(n.id),
 		Source:     serviceKeyToProto(source),
 		Target:     serviceKeyToProto(target),
-		Payload:    payload,
+		Payload:    wirePayload,
 	}, responseProtocol)
 	if err != nil {
 		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
 			n.routeCache.invalidate(target)
 		}
-		return nil, err
+		return 0, nil, err
 	}
-	var response Message
-	if err := n.codec.Decode(responseProtocol.Payload, &response); err != nil {
-		return nil, err
-	}
-	return &response, nil
+	return decodeMessage(responseProtocol.Payload)
 }
 
-func (n *Node) dispatchLocal(source, target ServiceKey, msg *Message, request bool, responder func(*Message, error) error) error {
+func (n *Node) dispatchLocal(source, target ServiceKey, messageID uint32, payload []byte, request bool, responder func(uint32, []byte, error) error) error {
 	service, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
@@ -537,22 +502,22 @@ func (n *Node) dispatchLocal(source, target ServiceKey, msg *Message, request bo
 			if recovered := recover(); recovered != nil {
 				err := fmt.Errorf("service %s panic: %v\n%s", target, recovered, debug.Stack())
 				if request && !messageContext.responded.Load() {
-					_ = messageContext.respondWithError(nil, err)
+					_ = messageContext.respondWithError(0, nil, err)
 				} else {
 					n.report(err)
 				}
 			}
 		}()
-		err := service.HandleMessage(messageContext, msg)
+		err := service.HandleMessage(messageContext, messageID, payload)
 		if request && !messageContext.responded.Load() {
 			if err == nil {
 				err = fmt.Errorf("service %s returned without responding", target)
 			}
-			if responseErr := messageContext.respondWithError(nil, err); responseErr != nil {
+			if responseErr := messageContext.respondWithError(0, nil, err); responseErr != nil {
 				n.report(responseErr)
 			}
 		} else if err != nil {
-			n.report(fmt.Errorf("handle message %d in service %s: %w", msg.ID, target, err))
+			n.report(fmt.Errorf("handle message %d in service %s: %w", messageID, target, err))
 		}
 	})
 	return nil
@@ -651,12 +616,12 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 		return
 	}
 	n.rememberSourceNode(session, sourceNode)
-	var message Message
-	if err := n.codec.Decode(request.Payload, &message); err != nil {
+	messageID, payload, err := decodeMessage(request.Payload)
+	if err != nil {
 		n.report(err)
 		return
 	}
-	if err := n.dispatchLocal(source, target, &message, false, nil); err != nil {
+	if err := n.dispatchLocal(source, target, messageID, payload, false, nil); err != nil {
 		n.report(err)
 	}
 }
@@ -766,23 +731,23 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			return
 		}
 		n.rememberSourceNode(session, sourceNode)
-		var message Message
-		if err := n.codec.Decode(request.Payload, &message); err != nil {
-			n.respondRPCError(session, contextID, err)
+		messageID, payload, decodeErr := decodeMessage(request.Payload)
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, decodeErr)
 			return
 		}
-		err = n.dispatchLocal(source, target, &message, true, func(response *Message, responseErr error) error {
+		err = n.dispatchLocal(source, target, messageID, payload, true, func(responseID uint32, responsePayload []byte, responseErr error) error {
 			if responseErr != nil {
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
 			}
-			payload, encodeErr := n.codec.Encode(response)
+			wirePayload, encodeErr := encodeMessage(responseID, responsePayload)
 			if encodeErr != nil {
 				n.respondRPCError(session, contextID, encodeErr)
 				return encodeErr
 			}
 			return n.respondRPC(session, contextID, opDeliver, &rpcpb.DeliverResponse{
-				Payload: payload,
+				Payload: wirePayload,
 			})
 		})
 		if err != nil {

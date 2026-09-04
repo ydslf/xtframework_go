@@ -15,21 +15,22 @@ const (
 	testResponseID uint32 = 2
 )
 
-type testPayload struct{ Text string }
-
 type frameworkTestService struct {
 	BaseService
 	received chan string
 }
 
-func (s *frameworkTestService) HandleMessage(ctx *MessageContext, msg *Message) error {
-	payload := msg.Payload.(*testPayload)
+func (s *frameworkTestService) HandleMessage(ctx *MessageContext, messageID uint32, payload []byte) error {
+	if messageID != testRequestID {
+		return fmt.Errorf("unexpected message id %d", messageID)
+	}
+	text := string(payload)
 	select {
-	case s.received <- payload.Text:
+	case s.received <- text:
 	default:
 	}
 	if ctx.IsRequest() {
-		return ctx.Respond(&Message{ID: testResponseID, Payload: &testPayload{Text: "reply:" + payload.Text}})
+		return ctx.Respond(testResponseID, []byte("reply:"+text))
 	}
 	return nil
 }
@@ -76,17 +77,6 @@ func freeAddress(t *testing.T) string {
 	return address
 }
 
-func testMessages(t *testing.T) *MessageRegistry {
-	t.Helper()
-	registry := NewMessageRegistry()
-	for _, id := range []uint32{testRequestID, testResponseID} {
-		if err := registry.Register(id, func() any { return &testPayload{} }); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return registry
-}
-
 func waitMessage(t *testing.T, ch <-chan string, want string) {
 	t.Helper()
 	select {
@@ -126,11 +116,11 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 		},
 	}
 
-	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithMessageRegistry(testMessages(t)))
+	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories))
 	if err != nil {
 		t.Fatal(err)
 	}
-	roomNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories), WithMessageRegistry(testMessages(t)))
+	roomNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,37 +157,43 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	})
 
 	room1 := collector.get(2, "room", 1)
-	if err := roomNode.Send2Service("room", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "local"}}); err != nil {
+	if err := roomNode.Send2Service("room", 1, testRequestID, []byte("local")); err != nil {
 		t.Fatal(err)
 	}
 	waitMessage(t, room1.received, "local")
 
-	if err := mainNode.Send2Service("room", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "remote"}}); err != nil {
+	if err := mainNode.Send2Service("room", 1, testRequestID, []byte("remote")); err != nil {
 		t.Fatal(err)
 	}
 	waitMessage(t, room1.received, "remote")
 
-	response, err := mainNode.CallService(3*time.Second, "room", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "call"}})
+	responseID, response, err := mainNode.CallService(3*time.Second, "room", 1, testRequestID, []byte("call"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := response.Payload.(*testPayload).Text; got != "reply:call" {
+	if responseID != testResponseID {
+		t.Fatalf("response id = %d, want %d", responseID, testResponseID)
+	}
+	if got := string(response); got != "reply:call" {
 		t.Fatalf("response = %q", got)
 	}
 	waitMessage(t, room1.received, "call")
 
-	response, err = roomNode.CallService(3*time.Second, "room", 2, &Message{ID: testRequestID, Payload: &testPayload{Text: "local-call"}})
+	responseID, response, err = roomNode.CallService(3*time.Second, "room", 2, testRequestID, []byte("local-call"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := response.Payload.(*testPayload).Text; got != "reply:local-call" {
+	if responseID != testResponseID {
+		t.Fatalf("local response id = %d, want %d", responseID, testResponseID)
+	}
+	if got := string(response); got != "reply:local-call" {
 		t.Fatalf("local response = %q", got)
 	}
 
-	if _, err := mainNode.CallService(3*time.Second, "missing", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "missing"}}); !errors.Is(err, ErrServiceNotFound) {
+	if _, _, err := mainNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("missing service error = %v", err)
 	}
-	if _, err := roomNode.CallService(3*time.Second, "missing", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: "missing-remote"}}); !errors.Is(err, ErrServiceNotFound) {
+	if _, _, err := roomNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing-remote")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("remote missing service error = %v", err)
 	}
 
@@ -234,7 +230,7 @@ func TestNodeStartRollsBackRegisteredServices(t *testing.T) {
 			{ID: 2, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "room", ID: 1}, {Name: "center", ID: 1}}},
 		},
 	}
-	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithMessageRegistry(testMessages(t)))
+	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +239,7 @@ func TestNodeStartRollsBackRegisteredServices(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mainNode.Stop() })
 
-	secondNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories), WithMessageRegistry(testMessages(t)))
+	secondNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +267,6 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 	registry := &countingRegistry{MemoryRegistry: NewMemoryRegistry()}
 	mainNode, err := NewNode(cfg, 1,
 		WithFactoryRegistry(factories),
-		WithMessageRegistry(testMessages(t)),
 		WithServiceRegistry(registry),
 	)
 	if err != nil {
@@ -279,7 +274,6 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 	}
 	senderNode, err := NewNode(cfg, 2,
 		WithFactoryRegistry(factories),
-		WithMessageRegistry(testMessages(t)),
 		WithRouteCacheTTL(time.Minute),
 	)
 	if err != nil {
@@ -296,7 +290,7 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 
 	center := collector.get(1, "center", 1)
 	for _, text := range []string{"first", "second"} {
-		if err := senderNode.Send2Service("center", 1, &Message{ID: testRequestID, Payload: &testPayload{Text: text}}); err != nil {
+		if err := senderNode.Send2Service("center", 1, testRequestID, []byte(text)); err != nil {
 			t.Fatal(err)
 		}
 		waitMessage(t, center.received, text)
