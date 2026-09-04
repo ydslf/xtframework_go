@@ -48,7 +48,7 @@ func TestRPCResultUsesProtobufAndPreservesErrors(t *testing.T) {
 	response := &rpcpb.LookupResponse{
 		Location: &rpcpb.ServiceLocation{ServiceName: "room", ServiceId: 3, NodeId: 2, NodeAddr: "node-2"},
 	}
-	data, err := encodeOperationResult(opLookup, response)
+	data, err := encodeOperationResult(response)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestRPCResultUsesProtobufAndPreservesErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	var decoded rpcpb.LookupResponse
-	if err := decodeResultPayload(result, opLookup, &decoded); err != nil {
+	if err := decodeResultPayload(result, &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if !proto.Equal(response, &decoded) {
@@ -133,21 +133,20 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 	responses := []struct {
 		name    string
-		op      operation
 		message operationProtocol
 	}{
-		{name: "register", op: opRegister, message: &rpcpb.RegisterResponse{}},
-		{name: "unregister", op: opUnregister, message: &rpcpb.UnregisterResponse{}},
+		{name: "register", message: &rpcpb.RegisterResponse{}},
+		{name: "unregister", message: &rpcpb.UnregisterResponse{}},
 		{
-			name: "lookup", op: opLookup,
+			name:    "lookup",
 			message: &rpcpb.LookupResponse{Location: &rpcpb.ServiceLocation{ServiceName: "room", ServiceId: 1, NodeId: 2, NodeAddr: "node-2"}},
 		},
-		{name: "deliver", op: opDeliver, message: &rpcpb.DeliverResponse{Payload: []byte{1, 2, 3}}},
+		{name: "deliver", message: &rpcpb.DeliverResponse{Payload: []byte{1, 2, 3}}},
 	}
 
 	for _, test := range responses {
 		t.Run(test.name, func(t *testing.T) {
-			data, err := encodeOperationResult(test.op, test.message)
+			data, err := encodeOperationResult(test.message)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -156,7 +155,7 @@ func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			decoded := test.message.ProtoReflect().Type().New().Interface().(operationProtocol)
-			if err := decodeResultPayload(result, test.op, decoded); err != nil {
+			if err := decodeResultPayload(result, decoded); err != nil {
 				t.Fatal(err)
 			}
 			if !proto.Equal(test.message, decoded) {

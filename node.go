@@ -661,7 +661,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, err)
 			return
 		}
-		_ = n.respondRPC(session, contextID, opRegister, &rpcpb.RegisterResponse{})
+		_ = n.respondRPC(session, contextID, &rpcpb.RegisterResponse{})
 	case opUnregister:
 		var request rpcpb.UnregisterRequest
 		if decodeErr := decodeOperationPayload(envelope, opUnregister, &request); decodeErr != nil {
@@ -688,7 +688,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, err)
 			return
 		}
-		_ = n.respondRPC(session, contextID, opUnregister, &rpcpb.UnregisterResponse{})
+		_ = n.respondRPC(session, contextID, &rpcpb.UnregisterResponse{})
 	case opLookup:
 		var request rpcpb.LookupRequest
 		if decodeErr := decodeOperationPayload(envelope, opLookup, &request); decodeErr != nil {
@@ -716,7 +716,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, fmt.Errorf("%w: %s", ErrServiceNotFound, target))
 			return
 		}
-		_ = n.respondRPC(session, contextID, opLookup, &rpcpb.LookupResponse{
+		_ = n.respondRPC(session, contextID, &rpcpb.LookupResponse{
 			Location: serviceLocationToProto(location),
 		})
 	case opDeliver:
@@ -741,7 +741,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
 			}
-			return n.respondRPC(session, contextID, opDeliver, &rpcpb.DeliverResponse{
+			return n.respondRPC(session, contextID, &rpcpb.DeliverResponse{
 				Payload: responsePayload,
 			})
 		})
@@ -841,8 +841,8 @@ func (n *Node) respondRPCError(session xtnetNet.ISession, contextID int32, err e
 	n.serverRPC.Respond(session, contextID, writePacket(data))
 }
 
-func (n *Node) respondRPC(session xtnetNet.ISession, contextID int32, op operation, response operationProtocol) error {
-	data, err := encodeOperationResult(op, response)
+func (n *Node) respondRPC(session xtnetNet.ISession, contextID int32, response operationProtocol) error {
+	data, err := encodeOperationResult(response)
 	if err != nil {
 		n.report(err)
 		return err

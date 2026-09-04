@@ -34,7 +34,7 @@ type operationProtocol interface {
 }
 
 func encodeOperationEnvelope(op operation, message operationProtocol) ([]byte, error) {
-	payload, err := encodeOperationPayload(op, message)
+	payload, err := encodeOperationPayload(message)
 	if err != nil {
 		return nil, err
 	}
@@ -79,24 +79,21 @@ func decodeOperationPayload(envelope rpcEnvelope, want operation, message operat
 	return nil
 }
 
-func encodeOperationResult(op operation, message operationProtocol) ([]byte, error) {
-	payload, err := encodeOperationPayload(op, message)
+func encodeOperationResult(message operationProtocol) ([]byte, error) {
+	payload, err := encodeOperationPayload(message)
 	if err != nil {
 		return nil, err
 	}
 	return encodeResult(rpcResult{Payload: payload})
 }
 
-func encodeOperationPayload(op operation, message operationProtocol) ([]byte, error) {
-	if !validOperation(op) {
-		return nil, fmt.Errorf("encode rpc operation payload: unsupported operation %d", op)
-	}
+func encodeOperationPayload(message operationProtocol) ([]byte, error) {
 	if message == nil || !message.ProtoReflect().IsValid() {
-		return nil, fmt.Errorf("encode rpc operation %d payload: message is nil", op)
+		return nil, fmt.Errorf("encode rpc operation payload: message is nil")
 	}
 	payload, err := proto.Marshal(message)
 	if err != nil {
-		return nil, fmt.Errorf("encode rpc operation %d payload: %w", op, err)
+		return nil, fmt.Errorf("encode rpc operation payload: %w", err)
 	}
 	return payload, nil
 }
@@ -139,15 +136,12 @@ func decodeResult(data []byte) (rpcResult, error) {
 	return result, nil
 }
 
-func decodeResultPayload(result rpcResult, want operation, message operationProtocol) error {
-	if !validOperation(want) {
-		return fmt.Errorf("decode rpc operation result: unsupported operation %d", want)
-	}
+func decodeResultPayload(result rpcResult, message operationProtocol) error {
 	if message == nil || !message.ProtoReflect().IsValid() {
-		return fmt.Errorf("decode rpc operation %d result: message is nil", want)
+		return fmt.Errorf("decode rpc operation result: message is nil")
 	}
 	if err := proto.Unmarshal(result.Payload, message); err != nil {
-		return fmt.Errorf("decode rpc operation %d result: %w", want, err)
+		return fmt.Errorf("decode rpc operation result: %w", err)
 	}
 	return nil
 }

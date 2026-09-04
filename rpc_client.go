@@ -103,7 +103,7 @@ func (c *RPCClient) request(expireMS time.Duration, op operation, request, respo
 	if err != nil {
 		return err
 	}
-	return decodeResultPayload(result, op, response)
+	return decodeResultPayload(result, response)
 }
 
 func (c *RPCClient) Close() {
