@@ -6,7 +6,12 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"xtframework/internal/rpcpb"
+	"xtnet/net/packet"
 )
+
+func newRPCReadPacket(data []byte) *packet.ReadPacket {
+	return packet.NewReadPacket(data, byteOrder, 0, len(data))
+}
 
 func TestRPCEnvelopeUsesOperationPrefix(t *testing.T) {
 	request := &rpcpb.RegisterRequest{
@@ -18,7 +23,7 @@ func TestRPCEnvelopeUsesOperationPrefix(t *testing.T) {
 			NodeAddr:    "127.0.0.1:9002",
 		},
 	}
-	wpk, err := encodeOperationEnvelope(opRegister, request)
+	wpk, err := encodeEnvelope(opRegister, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,12 +33,15 @@ func TestRPCEnvelopeUsesOperationPrefix(t *testing.T) {
 		t.Fatalf("wire operation = %d, want %d", got, opRegister)
 	}
 
-	envelope, err := decodeEnvelope(data)
+	op, payload, err := decodeEnvelope(newRPCReadPacket(data))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if op != opRegister {
+		t.Fatalf("decoded operation = %d, want %d", op, opRegister)
+	}
 	var decoded rpcpb.RegisterRequest
-	if err := decodeOperationPayload(envelope, opRegister, &decoded); err != nil {
+	if err := decodeOperationPayload(payload, &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if !proto.Equal(request, &decoded) {
@@ -45,16 +53,20 @@ func TestRPCResultUsesProtobufAndPreservesErrors(t *testing.T) {
 	response := &rpcpb.LookupResponse{
 		Location: &rpcpb.ServiceLocation{ServiceName: "room", ServiceId: 3, NodeId: 2, NodeAddr: "node-2"},
 	}
-	wpk, err := encodeOperationResult(response)
+	wpk, err := encodeResult("", "", response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := decodeResult(wpk.GetRealData())
+	data := wpk.GetRealData()
+	if len(data) < 4 || data[0] != 0 || data[1] != 0 || data[2] != 0 || data[3] != 0 {
+		t.Fatalf("successful result header = %v, want two empty strings", data[:min(len(data), 4)])
+	}
+	payload, err := decodeResult(newRPCReadPacket(data))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var decoded rpcpb.LookupResponse
-	if err := decodeResultPayload(result, &decoded); err != nil {
+	if err := decodeResultPayload(payload, &decoded); err != nil {
 		t.Fatal(err)
 	}
 	if !proto.Equal(response, &decoded) {
@@ -71,11 +83,11 @@ func TestRPCResultUsesProtobufAndPreservesErrors(t *testing.T) {
 		{code: "invalid_message", want: ErrInvalidMessage},
 	} {
 		t.Run(test.code, func(t *testing.T) {
-			data, err := encodeResult(rpcResult{Code: test.code, Error: "remote failure"})
+			wpk, err := encodeResult(test.code, "remote failure", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := decodeResult(data); !errors.Is(err, test.want) {
+			if _, err := decodeResult(newRPCReadPacket(wpk.GetRealData())); !errors.Is(err, test.want) {
 				t.Fatalf("decodeResult() error = %v, want %v", err, test.want)
 			}
 		})
@@ -108,16 +120,19 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 
 	for _, source := range protocols {
 		t.Run(source.name, func(t *testing.T) {
-			wpk, err := encodeOperationEnvelope(source.op, source.message)
+			wpk, err := encodeEnvelope(source.op, source.message)
 			if err != nil {
 				t.Fatal(err)
 			}
-			envelope, err := decodeEnvelope(wpk.GetRealData())
+			op, payload, err := decodeEnvelope(newRPCReadPacket(wpk.GetRealData()))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if op != source.op {
+				t.Fatalf("decoded operation = %d, want %d", op, source.op)
 			}
 			decoded := source.message.ProtoReflect().Type().New().Interface().(operationProtocol)
-			if err := decodeOperationPayload(envelope, source.op, decoded); err != nil {
+			if err := decodeOperationPayload(payload, decoded); err != nil {
 				t.Fatal(err)
 			}
 			if !proto.Equal(source.message, decoded) {
@@ -143,16 +158,16 @@ func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 
 	for _, test := range responses {
 		t.Run(test.name, func(t *testing.T) {
-			wpk, err := encodeOperationResult(test.message)
+			wpk, err := encodeResult("", "", test.message)
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := decodeResult(wpk.GetRealData())
+			payload, err := decodeResult(newRPCReadPacket(wpk.GetRealData()))
 			if err != nil {
 				t.Fatal(err)
 			}
 			decoded := test.message.ProtoReflect().Type().New().Interface().(operationProtocol)
-			if err := decodeResultPayload(result, decoded); err != nil {
+			if err := decodeResultPayload(payload, decoded); err != nil {
 				t.Fatal(err)
 			}
 			if !proto.Equal(test.message, decoded) {
@@ -163,10 +178,13 @@ func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 }
 
 func TestRPCRejectsMalformedEnvelopes(t *testing.T) {
-	if _, err := decodeEnvelope([]byte{0x00}); err == nil {
+	if _, _, err := decodeEnvelope(newRPCReadPacket([]byte{0x00})); err == nil {
 		t.Fatal("envelope without operation was accepted")
 	}
-	if _, err := decodeResult([]byte{0x0a, 0xff}); err == nil {
-		t.Fatal("malformed protobuf result was accepted")
+	if _, err := decodeResult(newRPCReadPacket([]byte{0x00})); err == nil {
+		t.Fatal("result without complete code length was accepted")
+	}
+	if _, err := decodeResult(newRPCReadPacket([]byte{0x00, 0x02, 'x'})); err == nil {
+		t.Fatal("result with incomplete code was accepted")
 	}
 }

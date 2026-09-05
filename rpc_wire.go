@@ -19,17 +19,13 @@ const (
 	opDeliver              = rpcpb.RpcOperation_RPC_OPERATION_DELIVER
 )
 
-type rpcResult struct {
-	Payload []byte
-	Code    string
-	Error   string
-}
-
 type operationProtocol interface {
 	proto.Message
 }
 
-func encodeOperationEnvelope(op operation, message operationProtocol) (*packet.WritePacket, error) {
+const maxRPCStringSize = 1<<15 - 1
+
+func encodeEnvelope(op operation, message operationProtocol) (*packet.WritePacket, error) {
 	if message == nil || !message.ProtoReflect().IsValid() {
 		return nil, fmt.Errorf("encode rpc operation payload: message is nil")
 	}
@@ -63,50 +59,49 @@ func decodeOperationPayload(payLoad []byte, message operationProtocol) error {
 	return nil
 }
 
-func encodeOperationResult(message operationProtocol) (*packet.WritePacket, error) {
-	payload, err := encodeOperationPayload(message)
-	if err != nil {
-		return nil, err
+func encodeResult(code, errMessage string, message operationProtocol) (*packet.WritePacket, error) {
+	if len(code) > maxRPCStringSize {
+		return nil, fmt.Errorf("encode rpc result: code is too long: %d", len(code))
 	}
-	data, err := encodeResult(rpcResult{Payload: payload})
-	if err != nil {
-		return nil, err
+	if len(errMessage) > maxRPCStringSize {
+		return nil, fmt.Errorf("encode rpc result: error message is too long: %d", len(errMessage))
 	}
-	return writePacket(data), nil
-}
-
-func encodeOperationPayload(message operationProtocol) ([]byte, error) {
-	if message == nil || !message.ProtoReflect().IsValid() {
-		return nil, fmt.Errorf("encode rpc operation payload: message is nil")
+	msgSize := 0
+	if message != nil {
+		if !message.ProtoReflect().IsValid() {
+			return nil, fmt.Errorf("encode rpc result: message is nil")
+		}
+		msgSize = proto.Size(message)
 	}
-	payload, err := proto.Marshal(message)
-	if err != nil {
-		return nil, fmt.Errorf("encode rpc operation payload: %w", err)
+	wpk := packet.NewWritePacket(4+len(code)+len(errMessage)+msgSize, 5, byteOrder)
+	wpk.WriteString(code)
+	wpk.WriteString(errMessage)
+	if message == nil {
+		return wpk, nil
 	}
-	return payload, nil
-}
-
-func encodeResult(result rpcResult) ([]byte, error) {
-	data, err := proto.Marshal(&rpcpb.RpcResult{
-		Payload:      result.Payload,
-		ErrorCode:    result.Code,
-		ErrorMessage: result.Error,
-	})
+	data, err := proto.MarshalOptions{}.MarshalAppend(wpk.GetData()[:0], message)
 	if err != nil {
 		return nil, fmt.Errorf("encode rpc result: %w", err)
 	}
-	return data, nil
+	if len(data) != msgSize {
+		return nil, fmt.Errorf("protobuf size changed during marshal: got %d, want %d", len(data), msgSize)
+	}
+	wpk.AddPos(msgSize)
+	return wpk, nil
 }
 
-func decodeResult(data []byte) (rpcResult, error) {
-	var wire rpcpb.RpcResult
-	if err := proto.Unmarshal(data, &wire); err != nil {
-		return rpcResult{}, fmt.Errorf("decode rpc result: %w", err)
+func decodeResult(rpk *packet.ReadPacket) ([]byte, error) {
+	code, err := readResultString(rpk, "code")
+	if err != nil {
+		return nil, err
 	}
-	result := rpcResult{Payload: wire.Payload, Code: wire.ErrorCode, Error: wire.ErrorMessage}
-	if result.Error != "" {
+	errMessage, err := readResultString(rpk, "error message")
+	if err != nil {
+		return nil, err
+	}
+	if code != "" {
 		var cause error
-		switch result.Code {
+		switch code {
 		case "service_not_found":
 			cause = ErrServiceNotFound
 		case "service_exists":
@@ -117,18 +112,32 @@ func decodeResult(data []byte) (rpcResult, error) {
 			cause = ErrInvalidMessage
 		}
 		if cause != nil {
-			return result, fmt.Errorf("%w: remote rpc: %s", cause, result.Error)
+			return nil, fmt.Errorf("%w: remote rpc: %s", cause, errMessage)
 		}
-		return result, fmt.Errorf("remote rpc: %s", result.Error)
+		return nil, fmt.Errorf("remote rpc: %s", errMessage)
 	}
-	return result, nil
+	return rpk.GetCurData(), nil
 }
 
-func decodeResultPayload(result rpcResult, message operationProtocol) error {
+func readResultString(rpk *packet.ReadPacket, name string) (string, error) {
+	if rpk.GetLeftSize() < 2 {
+		return "", fmt.Errorf("decode rpc result: missing %s length", name)
+	}
+	size := int(rpk.PeakInt16())
+	if size < 0 {
+		return "", fmt.Errorf("decode rpc result: invalid %s length %d", name, size)
+	}
+	if rpk.GetLeftSize() < size+2 {
+		return "", fmt.Errorf("decode rpc result: incomplete %s", name)
+	}
+	return rpk.ReadString(), nil
+}
+
+func decodeResultPayload(payload []byte, message operationProtocol) error {
 	if message == nil || !message.ProtoReflect().IsValid() {
 		return fmt.Errorf("decode rpc operation result: message is nil")
 	}
-	if err := proto.Unmarshal(result.Payload, message); err != nil {
+	if err := proto.Unmarshal(payload, message); err != nil {
 		return fmt.Errorf("decode rpc operation result: %w", err)
 	}
 	return nil
@@ -184,10 +193,4 @@ func rpcInt(value int64, name string) (int, error) {
 		return 0, fmt.Errorf("%s %d overflows int", name, value)
 	}
 	return converted, nil
-}
-
-func writePacket(data []byte) *packet.WritePacket {
-	wpk := packet.NewWritePacket(len(data), 5, byteOrder)
-	wpk.WriteData(data)
-	return wpk
 }

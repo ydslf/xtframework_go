@@ -822,30 +822,30 @@ func (n *Node) rememberSourceNode(session xtnetNet.ISession, nodeID int) {
 }
 
 func (n *Node) respondRPCError(session xtnetNet.ISession, contextID int32, err error) {
-	result := rpcResult{}
+	var code, errMessage string
 	if err != nil {
-		result.Error = err.Error()
+		errMessage = err.Error()
 		switch {
 		case errors.Is(err, ErrServiceNotFound):
-			result.Code = "service_not_found"
+			code = "service_not_found"
 		case errors.Is(err, ErrServiceExists):
-			result.Code = "service_exists"
+			code = "service_exists"
 		case errors.Is(err, ErrNodeNotFound):
-			result.Code = "node_not_found"
+			code = "node_not_found"
 		case errors.Is(err, ErrInvalidMessage):
-			result.Code = "invalid_message"
+			code = "invalid_message"
 		}
 	}
-	data, encodeErr := encodeResult(result)
+	wpk, encodeErr := encodeResult(code, errMessage, nil)
 	if encodeErr != nil {
 		n.report(encodeErr)
 		return
 	}
-	n.serverRPC.Respond(session, contextID, writePacket(data))
+	n.serverRPC.Respond(session, contextID, wpk)
 }
 
 func (n *Node) respondRPC(session xtnetNet.ISession, contextID int32, response operationProtocol) error {
-	wpk, err := encodeOperationResult(response)
+	wpk, err := encodeResult("", "", response)
 	if err != nil {
 		n.report(err)
 		return err

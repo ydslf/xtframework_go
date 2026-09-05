@@ -75,7 +75,7 @@ func (c *RPCClient) send(op operation, message operationProtocol) error {
 	if !c.connected.Load() || session == nil {
 		return ErrRPCDisconnected
 	}
-	wpk, err := encodeOperationEnvelope(op, message)
+	wpk, err := encodeEnvelope(op, message)
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,7 @@ func (c *RPCClient) request(expireMS time.Duration, op operation, request, respo
 	if !c.connected.Load() || session == nil {
 		return ErrRPCDisconnected
 	}
-	wpk, err := encodeOperationEnvelope(op, request)
+	wpk, err := encodeEnvelope(op, request)
 	if err != nil {
 		return err
 	}
@@ -98,11 +98,11 @@ func (c *RPCClient) request(expireMS time.Duration, op operation, request, respo
 	if err != nil {
 		return err
 	}
-	result, err := decodeResult(rpk.GetCurData())
+	payload, err := decodeResult(rpk)
 	if err != nil {
 		return err
 	}
-	return decodeResultPayload(result, response)
+	return decodeResultPayload(payload, response)
 }
 
 func (c *RPCClient) Close() {
