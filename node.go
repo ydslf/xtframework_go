@@ -32,6 +32,8 @@ const (
 
 const defaultRouteCacheTTL = 30 * time.Second
 
+var byteOrder binary.ByteOrder = binary.BigEndian
+
 var xtnetLoggerOnce sync.Once
 
 func ensureXTNetLogger() {
@@ -296,7 +298,7 @@ func (n *Node) startRPCServer() error {
 	n.serverRPC = rpc.NewNoSync(n.rpcLoop)
 	n.serverRPC.SetOnRpcDirect(n.handleRPCDirect)
 	n.serverRPC.SetOnRpcRequest(n.handleRPCRequest)
-	agent := serveragent.NewInternal(n.rpcLoop, binary.BigEndian)
+	agent := serveragent.NewInternal(n.rpcLoop, byteOrder)
 	agent.SetEventHandler(events)
 	agent.SetNetRpc(n.serverRPC)
 	n.rpcServer = tcp.NewServer(n.nodeConfig.ListenAddr, agent)
@@ -596,46 +598,47 @@ func (n *Node) removeRPCClient(nodeID int, client *RPCClient) {
 }
 
 func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket) {
-	envelope, err := decodeEnvelope(rpk.GetCurData())
+	op, payload, err := decodeEnvelope(rpk)
 	if err != nil {
 		n.report(err)
 		return
 	}
-	if envelope.Operation != opDeliver {
-		n.report(fmt.Errorf("unsupported direct rpc operation %d", envelope.Operation))
-		return
-	}
-	var request rpcpb.DeliverRequest
-	if err := decodeOperationPayload(envelope, opDeliver, &request); err != nil {
-		n.report(rpcInvalidMessage(err))
-		return
-	}
-	sourceNode, source, target, err := decodeDeliverRequest(&request)
-	if err != nil {
-		n.report(rpcInvalidMessage(err))
-		return
-	}
-	n.rememberSourceNode(session, sourceNode)
-	messageID, payload, err := decodeMessage(request.Payload)
-	if err != nil {
-		n.report(err)
-		return
-	}
-	if err := n.dispatchLocal(source, target, messageID, payload, false, nil); err != nil {
-		n.report(err)
+	switch op {
+	case opDeliver:
+		var request rpcpb.DeliverRequest
+		if err := decodeOperationPayload(payload, &request); err != nil {
+			n.report(rpcInvalidMessage(err))
+			return
+		}
+		sourceNode, source, target, err := decodeDeliverRequest(&request)
+		if err != nil {
+			n.report(rpcInvalidMessage(err))
+			return
+		}
+		n.rememberSourceNode(session, sourceNode)
+		messageID, payload, err := decodeMessage(request.Payload)
+		if err != nil {
+			n.report(err)
+			return
+		}
+		if err := n.dispatchLocal(source, target, messageID, payload, false, nil); err != nil {
+			n.report(err)
+		}
+	default:
+		n.report(fmt.Errorf("unsupported direct rpc operation %d", op))
 	}
 }
 
 func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk *packet.ReadPacket) {
-	envelope, err := decodeEnvelope(rpk.GetCurData())
+	op, payload, err := decodeEnvelope(rpk)
 	if err != nil {
 		n.respondRPCError(session, contextID, rpcInvalidMessage(err))
 		return
 	}
-	switch envelope.Operation {
+	switch op {
 	case opRegister:
 		var request rpcpb.RegisterRequest
-		if decodeErr := decodeOperationPayload(envelope, opRegister, &request); decodeErr != nil {
+		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
@@ -664,7 +667,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 		_ = n.respondRPC(session, contextID, &rpcpb.RegisterResponse{})
 	case opUnregister:
 		var request rpcpb.UnregisterRequest
-		if decodeErr := decodeOperationPayload(envelope, opUnregister, &request); decodeErr != nil {
+		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
@@ -691,7 +694,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 		_ = n.respondRPC(session, contextID, &rpcpb.UnregisterResponse{})
 	case opLookup:
 		var request rpcpb.LookupRequest
-		if decodeErr := decodeOperationPayload(envelope, opLookup, &request); decodeErr != nil {
+		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
@@ -721,7 +724,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 		})
 	case opDeliver:
 		var request rpcpb.DeliverRequest
-		if decodeErr := decodeOperationPayload(envelope, opDeliver, &request); decodeErr != nil {
+		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
@@ -749,7 +752,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, err)
 		}
 	default:
-		n.respondRPCError(session, contextID, fmt.Errorf("unsupported rpc operation %d", envelope.Operation))
+		n.respondRPCError(session, contextID, fmt.Errorf("unsupported rpc operation %d", op))
 	}
 }
 
@@ -842,12 +845,12 @@ func (n *Node) respondRPCError(session xtnetNet.ISession, contextID int32, err e
 }
 
 func (n *Node) respondRPC(session xtnetNet.ISession, contextID int32, response operationProtocol) error {
-	data, err := encodeOperationResult(response)
+	wpk, err := encodeOperationResult(response)
 	if err != nil {
 		n.report(err)
 		return err
 	}
-	n.serverRPC.Respond(session, contextID, writePacket(data))
+	n.serverRPC.Respond(session, contextID, wpk)
 	return nil
 }
 

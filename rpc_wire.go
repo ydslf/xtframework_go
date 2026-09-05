@@ -1,27 +1,23 @@
 package xtframework
 
 import (
-	"encoding/binary"
 	"fmt"
 
-	"google.golang.org/protobuf/proto"
 	"xtframework/internal/rpcpb"
 	"xtnet/net/packet"
+
+	"google.golang.org/protobuf/proto"
 )
 
 type operation = rpcpb.RpcOperation
 
 const (
-	opRegister   = rpcpb.RpcOperation_RPC_OPERATION_REGISTER
-	opUnregister = rpcpb.RpcOperation_RPC_OPERATION_UNREGISTER
-	opLookup     = rpcpb.RpcOperation_RPC_OPERATION_LOOKUP
-	opDeliver    = rpcpb.RpcOperation_RPC_OPERATION_DELIVER
+	opNone       operation = iota
+	opRegister             = rpcpb.RpcOperation_RPC_OPERATION_REGISTER
+	opUnregister           = rpcpb.RpcOperation_RPC_OPERATION_UNREGISTER
+	opLookup               = rpcpb.RpcOperation_RPC_OPERATION_LOOKUP
+	opDeliver              = rpcpb.RpcOperation_RPC_OPERATION_DELIVER
 )
-
-type rpcEnvelope struct {
-	Operation operation
-	Payload   []byte
-}
 
 type rpcResult struct {
 	Payload []byte
@@ -33,58 +29,50 @@ type operationProtocol interface {
 	proto.Message
 }
 
-func encodeOperationEnvelope(op operation, message operationProtocol) ([]byte, error) {
-	payload, err := encodeOperationPayload(message)
+func encodeOperationEnvelope(op operation, message operationProtocol) (*packet.WritePacket, error) {
+	if message == nil || !message.ProtoReflect().IsValid() {
+		return nil, fmt.Errorf("encode rpc operation payload: message is nil")
+	}
+	msgSize := proto.Size(message)
+	wpk := packet.NewWritePacket(msgSize+2, 5, byteOrder)
+	wpk.WriteInt16(int16(op))
+	buffer := wpk.GetData()[:0]
+	data, err := proto.MarshalOptions{}.MarshalAppend(buffer, message)
 	if err != nil {
 		return nil, err
 	}
-	return encodeEnvelope(rpcEnvelope{Operation: op, Payload: payload})
+	if len(data) != msgSize {
+		return nil, fmt.Errorf("protobuf size changed during marshal: got %d, want %d", len(data), msgSize)
+	}
+	wpk.AddPos(msgSize)
+	return wpk, nil
 }
 
-func encodeEnvelope(envelope rpcEnvelope) ([]byte, error) {
-	if !validOperation(envelope.Operation) {
-		return nil, fmt.Errorf("encode rpc envelope: unsupported operation %d", envelope.Operation)
+func decodeEnvelope(rpk *packet.ReadPacket) (operation, []byte, error) {
+	if rpk.GetLeftSize() < 2 {
+		return opNone, nil, fmt.Errorf("decode rpc envelope: missing operation")
 	}
-	if len(envelope.Payload) == 0 {
-		return nil, fmt.Errorf("encode rpc envelope: operation %d has empty payload", envelope.Operation)
-	}
-	data, err := proto.Marshal(&rpcpb.RpcEnvelope{Operation: envelope.Operation, Payload: envelope.Payload})
-	if err != nil {
-		return nil, fmt.Errorf("encode rpc envelope: %w", err)
-	}
-	return data, nil
+	op := operation(rpk.ReadInt16())
+	return op, rpk.GetCurData(), nil
 }
 
-func decodeEnvelope(data []byte) (rpcEnvelope, error) {
-	var wire rpcpb.RpcEnvelope
-	if err := proto.Unmarshal(data, &wire); err != nil {
-		return rpcEnvelope{}, fmt.Errorf("decode rpc envelope: %w", err)
-	}
-	if !validOperation(wire.Operation) {
-		return rpcEnvelope{}, fmt.Errorf("decode rpc envelope: unsupported operation %d", wire.Operation)
-	}
-	if len(wire.Payload) == 0 {
-		return rpcEnvelope{}, fmt.Errorf("decode rpc envelope: operation %d has empty payload", wire.Operation)
-	}
-	return rpcEnvelope{Operation: wire.Operation, Payload: wire.Payload}, nil
-}
-
-func decodeOperationPayload(envelope rpcEnvelope, want operation, message operationProtocol) error {
-	if envelope.Operation != want {
-		return fmt.Errorf("decode rpc operation payload: envelope operation %d, want %d", envelope.Operation, want)
-	}
-	if err := proto.Unmarshal(envelope.Payload, message); err != nil {
-		return fmt.Errorf("decode rpc operation %d payload: %w", want, err)
+func decodeOperationPayload(payLoad []byte, message operationProtocol) error {
+	if err := proto.Unmarshal(payLoad, message); err != nil {
+		return fmt.Errorf("decode rpc payload: %w", err)
 	}
 	return nil
 }
 
-func encodeOperationResult(message operationProtocol) ([]byte, error) {
+func encodeOperationResult(message operationProtocol) (*packet.WritePacket, error) {
 	payload, err := encodeOperationPayload(message)
 	if err != nil {
 		return nil, err
 	}
-	return encodeResult(rpcResult{Payload: payload})
+	data, err := encodeResult(rpcResult{Payload: payload})
+	if err != nil {
+		return nil, err
+	}
+	return writePacket(data), nil
 }
 
 func encodeOperationPayload(message operationProtocol) ([]byte, error) {
@@ -146,15 +134,6 @@ func decodeResultPayload(result rpcResult, message operationProtocol) error {
 	return nil
 }
 
-func validOperation(op operation) bool {
-	switch op {
-	case opRegister, opUnregister, opLookup, opDeliver:
-		return true
-	default:
-		return false
-	}
-}
-
 func serviceKeyToProto(key ServiceKey) *rpcpb.ServiceKey {
 	return &rpcpb.ServiceKey{Name: key.Name, Id: int64(key.ID)}
 }
@@ -208,7 +187,7 @@ func rpcInt(value int64, name string) (int, error) {
 }
 
 func writePacket(data []byte) *packet.WritePacket {
-	wpk := packet.NewWritePacket(len(data), 5, binary.BigEndian)
+	wpk := packet.NewWritePacket(len(data), 5, byteOrder)
 	wpk.WriteData(data)
 	return wpk
 }

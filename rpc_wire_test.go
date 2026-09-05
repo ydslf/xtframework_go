@@ -8,7 +8,7 @@ import (
 	"xtframework/internal/rpcpb"
 )
 
-func TestRPCEnvelopeUsesProtobuf(t *testing.T) {
+func TestRPCEnvelopeUsesOperationPrefix(t *testing.T) {
 	request := &rpcpb.RegisterRequest{
 		SourceNode: 2,
 		Location: &rpcpb.ServiceLocation{
@@ -18,17 +18,14 @@ func TestRPCEnvelopeUsesProtobuf(t *testing.T) {
 			NodeAddr:    "127.0.0.1:9002",
 		},
 	}
-	data, err := encodeOperationEnvelope(opRegister, request)
+	wpk, err := encodeOperationEnvelope(opRegister, request)
 	if err != nil {
 		t.Fatal(err)
 	}
+	data := wpk.GetRealData()
 
-	var wire rpcpb.RpcEnvelope
-	if err := proto.Unmarshal(data, &wire); err != nil {
-		t.Fatalf("protobuf envelope decode failed: %v", err)
-	}
-	if wire.Operation != opRegister || len(wire.Payload) == 0 {
-		t.Fatalf("wire envelope = %v", &wire)
+	if got := operation(byteOrder.Uint16(data[:2])); got != opRegister {
+		t.Fatalf("wire operation = %d, want %d", got, opRegister)
 	}
 
 	envelope, err := decodeEnvelope(data)
@@ -48,11 +45,11 @@ func TestRPCResultUsesProtobufAndPreservesErrors(t *testing.T) {
 	response := &rpcpb.LookupResponse{
 		Location: &rpcpb.ServiceLocation{ServiceName: "room", ServiceId: 3, NodeId: 2, NodeAddr: "node-2"},
 	}
-	data, err := encodeOperationResult(response)
+	wpk, err := encodeOperationResult(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := decodeResult(data)
+	result, err := decodeResult(wpk.GetRealData())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,11 +108,11 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 
 	for _, source := range protocols {
 		t.Run(source.name, func(t *testing.T) {
-			data, err := encodeOperationEnvelope(source.op, source.message)
+			wpk, err := encodeOperationEnvelope(source.op, source.message)
 			if err != nil {
 				t.Fatal(err)
 			}
-			envelope, err := decodeEnvelope(data)
+			envelope, err := decodeEnvelope(wpk.GetRealData())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,11 +143,11 @@ func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 
 	for _, test := range responses {
 		t.Run(test.name, func(t *testing.T) {
-			data, err := encodeOperationResult(test.message)
+			wpk, err := encodeOperationResult(test.message)
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := decodeResult(data)
+			result, err := decodeResult(wpk.GetRealData())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -165,16 +162,9 @@ func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRPCRejectsMalformedAndUnknownEnvelopes(t *testing.T) {
-	if _, err := decodeEnvelope([]byte{0x12, 0xff}); err == nil {
-		t.Fatal("malformed protobuf envelope was accepted")
-	}
-	data, err := proto.Marshal(&rpcpb.RpcEnvelope{Operation: rpcpb.RpcOperation(99), Payload: []byte{1}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := decodeEnvelope(data); err == nil {
-		t.Fatal("unknown operation was accepted")
+func TestRPCRejectsMalformedEnvelopes(t *testing.T) {
+	if _, err := decodeEnvelope([]byte{0x00}); err == nil {
+		t.Fatal("envelope without operation was accepted")
 	}
 	if _, err := decodeResult([]byte{0x0a, 0xff}); err == nil {
 		t.Fatal("malformed protobuf result was accepted")

@@ -1,7 +1,6 @@
 package xtframework
 
 import (
-	"encoding/binary"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -47,7 +46,7 @@ func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
 	netRPC := rpc.NewSync(node.rpcLoop)
 	netRPC.SetOnRpcDirect(func(net.ISession, *packet.ReadPacket) {})
 	netRPC.SetOnRpcRequest(func(net.ISession, int32, *packet.ReadPacket) {})
-	agent := clientagent.NewInternal(node.rpcLoop, binary.BigEndian)
+	agent := clientagent.NewInternal(node.rpcLoop, byteOrder)
 	agent.SetEventHandler(events)
 	agent.SetNetRpc(netRPC)
 
@@ -76,11 +75,11 @@ func (c *RPCClient) send(op operation, message operationProtocol) error {
 	if !c.connected.Load() || session == nil {
 		return ErrRPCDisconnected
 	}
-	data, err := encodeOperationEnvelope(op, message)
+	wpk, err := encodeOperationEnvelope(op, message)
 	if err != nil {
 		return err
 	}
-	c.netRPC.SendDirect(session, writePacket(data))
+	c.netRPC.SendDirect(session, wpk)
 
 	return nil
 }
@@ -90,12 +89,12 @@ func (c *RPCClient) request(expireMS time.Duration, op operation, request, respo
 	if !c.connected.Load() || session == nil {
 		return ErrRPCDisconnected
 	}
-	data, err := encodeOperationEnvelope(op, request)
+	wpk, err := encodeOperationEnvelope(op, request)
 	if err != nil {
 		return err
 	}
 
-	rpk, err := c.netRPC.RequestSync(session, writePacket(data), expireMS)
+	rpk, err := c.netRPC.RequestSync(session, wpk, expireMS)
 	if err != nil {
 		return err
 	}

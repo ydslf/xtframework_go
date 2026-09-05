@@ -1,7 +1,6 @@
 package xtframework
 
 import (
-	"encoding/binary"
 	"fmt"
 )
 
@@ -11,7 +10,7 @@ func encodeMessage(id uint32, payload []byte) ([]byte, error) {
 		return nil, fmt.Errorf("%w: message id is zero", ErrInvalidMessage)
 	}
 	data := make([]byte, 4+len(payload))
-	binary.BigEndian.PutUint32(data, id)
+	byteOrder.PutUint32(data, id)
 	copy(data[4:], payload)
 	return data, nil
 }
@@ -21,7 +20,7 @@ func decodeMessage(data []byte) (uint32, []byte, error) {
 	if len(data) < 4 {
 		return 0, nil, fmt.Errorf("%w: encoded message is shorter than 4 bytes", ErrInvalidMessage)
 	}
-	id := binary.BigEndian.Uint32(data)
+	id := byteOrder.Uint32(data)
 	if id == 0 {
 		return 0, nil, fmt.Errorf("%w: message id is zero", ErrInvalidMessage)
 	}
