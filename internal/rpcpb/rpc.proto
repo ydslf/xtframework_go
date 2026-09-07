@@ -62,7 +62,8 @@ message DeliverRequest {
   int64 source_node = 1;
   ServiceKey source = 2;
   ServiceKey target = 3;
-  bytes payload = 4;
+  uint32 message_id = 4;
+  bytes payload = 5;
 }
 
 message DeliverResponse {

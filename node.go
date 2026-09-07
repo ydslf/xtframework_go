@@ -397,10 +397,6 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 		return n.dispatchLocal(source, target, messageID, payload, false, nil)
 	}
 
-	wirePayload, err := encodeMessage(messageID, payload)
-	if err != nil {
-		return err
-	}
 	location, err := n.lookupService(target)
 	if err != nil {
 		return err
@@ -414,7 +410,8 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 		SourceNode: int64(n.id),
 		Source:     serviceKeyToProto(source),
 		Target:     serviceKeyToProto(target),
-		Payload:    wirePayload,
+		MessageId:  messageID,
+		Payload:    payload,
 	})
 	if err != nil {
 		n.routeCache.invalidate(target)
@@ -459,10 +456,6 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 		}
 	}
 
-	wirePayload, err := encodeMessage(messageID, payload)
-	if err != nil {
-		return nil, err
-	}
 	location, err := n.lookupService(target)
 	if err != nil {
 		return nil, err
@@ -477,7 +470,8 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 		SourceNode: int64(n.id),
 		Source:     serviceKeyToProto(source),
 		Target:     serviceKeyToProto(target),
-		Payload:    wirePayload,
+		MessageId:  messageID,
+		Payload:    payload,
 	}, responseProtocol)
 	if err != nil {
 		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
@@ -611,18 +605,13 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 			n.report(rpcInvalidMessage(err))
 			return
 		}
-		sourceNode, source, target, err := decodeDeliverRequest(&request)
+		sourceNode, source, target, messageID, err := decodeDeliverRequest(&request)
 		if err != nil {
 			n.report(rpcInvalidMessage(err))
 			return
 		}
 		n.rememberSourceNode(session, sourceNode)
-		messageID, payload, err := decodeMessage(request.Payload)
-		if err != nil {
-			n.report(err)
-			return
-		}
-		if err := n.dispatchLocal(source, target, messageID, payload, false, nil); err != nil {
+		if err := n.dispatchLocal(source, target, messageID, request.Payload, false, nil); err != nil {
 			n.report(err)
 		}
 	default:
@@ -729,18 +718,13 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		sourceNode, source, target, decodeErr := decodeDeliverRequest(&request)
+		sourceNode, source, target, messageID, decodeErr := decodeDeliverRequest(&request)
 		if decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
 		n.rememberSourceNode(session, sourceNode)
-		messageID, payload, decodeErr := decodeMessage(request.Payload)
-		if decodeErr != nil {
-			n.respondRPCError(session, contextID, decodeErr)
-			return
-		}
-		err = n.dispatchLocal(source, target, messageID, payload, true, func(responsePayload []byte, responseErr error) error {
+		err = n.dispatchLocal(source, target, messageID, request.Payload, true, func(responsePayload []byte, responseErr error) error {
 			if responseErr != nil {
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
@@ -757,26 +741,26 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 	}
 }
 
-func decodeDeliverRequest(request *rpcpb.DeliverRequest) (int, ServiceKey, ServiceKey, error) {
+func decodeDeliverRequest(request *rpcpb.DeliverRequest) (int, ServiceKey, ServiceKey, uint32, error) {
 	sourceNode, err := rpcSourceNode(request.SourceNode)
 	if err != nil {
-		return 0, ServiceKey{}, ServiceKey{}, err
+		return 0, ServiceKey{}, ServiceKey{}, 0, err
 	}
 	source, err := serviceKeyFromProto(request.Source)
 	if err != nil {
-		return 0, ServiceKey{}, ServiceKey{}, fmt.Errorf("deliver source: %w", err)
+		return 0, ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver source: %w", err)
 	}
 	if source != (ServiceKey{}) && (source.Name == "" || source.ID <= 0) {
-		return 0, ServiceKey{}, ServiceKey{}, fmt.Errorf("deliver source is invalid: %s", source)
+		return 0, ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver source is invalid: %s", source)
 	}
 	target, err := requiredRPCServiceKey(request.Target, "deliver target")
 	if err != nil {
-		return 0, ServiceKey{}, ServiceKey{}, err
+		return 0, ServiceKey{}, ServiceKey{}, 0, err
 	}
-	if len(request.Payload) == 0 {
-		return 0, ServiceKey{}, ServiceKey{}, fmt.Errorf("deliver payload is empty")
+	if request.MessageId == 0 {
+		return 0, ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver message id is zero")
 	}
-	return sourceNode, source, target, nil
+	return sourceNode, source, target, request.MessageId, nil
 }
 
 func requiredRPCServiceKey(message *rpcpb.ServiceKey, name string) (ServiceKey, error) {

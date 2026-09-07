@@ -114,7 +114,7 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 		},
 		{
 			name: "deliver", op: opDeliver,
-			message: &rpcpb.DeliverRequest{SourceNode: 2, Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, Payload: []byte{1}},
+			message: &rpcpb.DeliverRequest{SourceNode: 2, Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, MessageId: 42, Payload: []byte{1}},
 		},
 	}
 
@@ -139,6 +139,28 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 				t.Fatalf("decoded request = %v, want %v", decoded, source.message)
 			}
 		})
+	}
+}
+
+func TestDecodeDeliverRequestValidatesMessageID(t *testing.T) {
+	request := &rpcpb.DeliverRequest{
+		SourceNode: 2,
+		Source:     &rpcpb.ServiceKey{},
+		Target:     &rpcpb.ServiceKey{Name: "room", Id: 1},
+		MessageId:  42,
+	}
+
+	_, _, _, messageID, err := decodeDeliverRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if messageID != 42 {
+		t.Fatalf("message id = %d, want 42", messageID)
+	}
+
+	request.MessageId = 0
+	if _, _, _, _, err := decodeDeliverRequest(request); err == nil {
+		t.Fatal("deliver request with zero message id was accepted")
 	}
 }
 

@@ -585,7 +585,8 @@ type DeliverRequest struct {
 	SourceNode    int64                  `protobuf:"varint,1,opt,name=source_node,json=sourceNode,proto3" json:"source_node,omitempty"`
 	Source        *ServiceKey            `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
 	Target        *ServiceKey            `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	MessageId     uint32                 `protobuf:"varint,4,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -639,6 +640,13 @@ func (x *DeliverRequest) GetTarget() *ServiceKey {
 		return x.Target
 	}
 	return nil
+}
+
+func (x *DeliverRequest) GetMessageId() uint32 {
+	if x != nil {
+		return x.MessageId
+	}
+	return 0
 }
 
 func (x *DeliverRequest) GetPayload() []byte {
@@ -730,13 +738,15 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"sourceNode\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\"N\n" +
 	"\x0eLookupResponse\x12<\n" +
-	"\blocation\x18\x01 \x01(\v2 .xtframework.rpc.ServiceLocationR\blocation\"\xb5\x01\n" +
+	"\blocation\x18\x01 \x01(\v2 .xtframework.rpc.ServiceLocationR\blocation\"\xd4\x01\n" +
 	"\x0eDeliverRequest\x12\x1f\n" +
 	"\vsource_node\x18\x01 \x01(\x03R\n" +
 	"sourceNode\x123\n" +
 	"\x06source\x18\x02 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06source\x123\n" +
-	"\x06target\x18\x03 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"+\n" +
+	"\x06target\x18\x03 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\x04 \x01(\rR\tmessageId\x12\x18\n" +
+	"\apayload\x18\x05 \x01(\fR\apayload\"+\n" +
 	"\x0fDeliverResponse\x12\x18\n" +
 	"\apayload\x18\x01 \x01(\fR\apayload*\x9c\x01\n" +
 	"\fRpcOperation\x12\x1d\n" +
