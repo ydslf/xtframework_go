@@ -88,11 +88,10 @@ type serviceRuntime struct {
 // Node 表示一个框架进程。Node 的运行状态由框架内部管理，应用程序通过
 // 只读方法查询节点信息和服务信息。
 type Node struct {
-	id            int
-	mainNodeID    int
-	localServices map[ServiceKey]Service
-	registry      ServiceRegistry
-	rpcServer     xtnetNet.IServer
+	id         int
+	mainNodeID int
+	registry   ServiceRegistry
+	rpcServer  xtnetNet.IServer
 
 	config         *Config
 	nodeConfig     NodeConfig
@@ -107,7 +106,7 @@ type Node struct {
 	rpcLoopWG sync.WaitGroup
 	serverRPC rpc.IRpc
 
-	services      map[ServiceKey]*serviceRuntime
+	localServices map[ServiceKey]*serviceRuntime
 	serviceOrder  []ServiceKey
 	clientsMu     sync.Mutex
 	rpcClients    map[int]*RPCClient
@@ -158,7 +157,6 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	node := &Node{
 		id:             nodeID,
 		mainNodeID:     config.MainNode,
-		localServices:  make(map[ServiceKey]Service),
 		registry:       options.registry,
 		rpcClients:     make(map[int]*RPCClient),
 		config:         config,
@@ -168,7 +166,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		routeCache:     newServiceRouteCache(options.routeCacheTTL),
 		errorHandler:   options.errorHandler,
 		rpcLoop:        frame.NewLoop(frame.LoopSizeMin, true),
-		services:       make(map[ServiceKey]*serviceRuntime),
+		localServices:  make(map[ServiceKey]*serviceRuntime),
 		sessions:       make(map[xtnetNet.ISession]struct{}),
 	}
 	node.state.Store(nodeStateInitial)
@@ -194,8 +192,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 			return nil, fmt.Errorf("services %s and %s share one loop", owner, key)
 		}
 		loops[service.Loop()] = key
-		node.localServices[key] = service
-		node.services[key] = &serviceRuntime{service: service}
+		node.localServices[key] = &serviceRuntime{service: service}
 		node.serviceOrder = append(node.serviceOrder, key)
 	}
 	return node, nil
@@ -215,16 +212,19 @@ func (n *Node) IsMainNode() bool { return n.id == n.mainNodeID }
 
 // LocalService 查询当前节点上的一个 Service。
 func (n *Node) LocalService(key ServiceKey) (Service, bool) {
-	service, exists := n.localServices[key]
-	return service, exists
+	runtime, exists := n.localServices[key]
+	if !exists {
+		return nil, false
+	}
+	return runtime.service, true
 }
 
 // LocalServices 返回当前节点全部 Service 的只读快照。修改返回的 map
 // 不会影响 Node 内部的 Service 容器。
 func (n *Node) LocalServices() map[ServiceKey]Service {
 	result := make(map[ServiceKey]Service, len(n.localServices))
-	for key, service := range n.localServices {
-		result[key] = service
+	for key, runtime := range n.localServices {
+		result[key] = runtime.service
 	}
 	return result
 }
@@ -260,7 +260,7 @@ func (n *Node) Start() error {
 	}
 
 	for _, key := range n.serviceOrder {
-		runtime := n.services[key]
+		runtime := n.localServices[key]
 		if err := n.startService(runtime); err != nil {
 			n.rollbackStart()
 			return fmt.Errorf("start service %s: %w", key, err)
@@ -489,10 +489,11 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 }
 
 func (n *Node) dispatchLocal(source, target ServiceKey, messageID uint32, payload []byte, request bool, responder func([]byte, error) error) error {
-	service, exists := n.localServices[target]
+	runtime, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
 	}
+	service := runtime.service
 	messageContext := &MessageContext{
 		source:  source,
 		target:  target,
@@ -881,7 +882,7 @@ func (n *Node) Stop() error {
 
 	var errs []error
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
-		runtime := n.services[n.serviceOrder[i]]
+		runtime := n.localServices[n.serviceOrder[i]]
 		if !runtime.registered {
 			continue
 		}
@@ -892,7 +893,7 @@ func (n *Node) Stop() error {
 	}
 	n.closeNetwork()
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
-		if err := n.stopService(n.services[n.serviceOrder[i]]); err != nil {
+		if err := n.stopService(n.localServices[n.serviceOrder[i]]); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -943,7 +944,7 @@ func (n *Node) closeNetwork() {
 
 func (n *Node) rollbackStart() {
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
-		runtime := n.services[n.serviceOrder[i]]
+		runtime := n.localServices[n.serviceOrder[i]]
 		if runtime.registered {
 			_ = n.unregisterService(n.serviceOrder[i])
 			runtime.registered = false
@@ -951,7 +952,7 @@ func (n *Node) rollbackStart() {
 	}
 	n.closeNetwork()
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
-		_ = n.stopService(n.services[n.serviceOrder[i]])
+		_ = n.stopService(n.localServices[n.serviceOrder[i]])
 	}
 	n.rpcLoop.Close(false)
 	n.rpcLoopWG.Wait()
