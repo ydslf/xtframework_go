@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"xtframework/internal/rpcpb"
 )
 
 const (
@@ -280,6 +282,17 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = senderNode.Stop() })
+
+	unregisteredClient, err := newRPCClient(senderNode, mainNode.ID(), mainNode.ListenAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unregisteredClient.request(time.Second, opLookup, &rpcpb.LookupRequest{
+		Target: &rpcpb.ServiceKey{Name: "center", Id: 1},
+	}, &rpcpb.LookupResponse{}); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("lookup from unregistered session error = %v, want ErrNodeNotFound", err)
+	}
+	unregisteredClient.Close()
 
 	center := collector.get(1, "center", 1)
 	for _, text := range []string{"first", "second"} {

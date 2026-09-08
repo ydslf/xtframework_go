@@ -85,6 +85,16 @@ type serviceRuntime struct {
 	registered bool
 }
 
+// RemoteNode 表示一个已在当前 RPC session 上完成注册的远端节点。
+type RemoteNode struct {
+	id      int
+	addr    string
+	session xtnetNet.ISession
+}
+
+func (n *RemoteNode) ID() int      { return n.id }
+func (n *RemoteNode) Addr() string { return n.addr }
+
 // Node 表示一个框架进程。Node 的运行状态由框架内部管理，应用程序通过
 // 只读方法查询节点信息和服务信息。
 type Node struct {
@@ -110,8 +120,8 @@ type Node struct {
 	serviceOrder  []ServiceKey
 	clientsMu     sync.Mutex
 	rpcClients    map[int]*RPCClient
-	sessionsMu    sync.Mutex
-	sessions      map[xtnetNet.ISession]struct{}
+	remoteNodesMu sync.RWMutex
+	remoteNodes   map[xtnetNet.ISession]*RemoteNode
 	shutdownMutex sync.Mutex
 }
 
@@ -167,7 +177,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		errorHandler:   options.errorHandler,
 		rpcLoop:        frame.NewLoop(frame.LoopSizeMin, true),
 		localServices:  make(map[ServiceKey]*serviceRuntime),
-		sessions:       make(map[xtnetNet.ISession]struct{}),
+		remoteNodes:    make(map[xtnetNet.ISession]*RemoteNode),
 	}
 	node.state.Store(nodeStateInitial)
 
@@ -258,6 +268,12 @@ func (n *Node) Start() error {
 		n.rollbackStart()
 		return err
 	}
+	if !n.IsMainNode() {
+		if _, err := n.mainClient(); err != nil {
+			n.rollbackStart()
+			return fmt.Errorf("register node %d: %w", n.id, err)
+		}
+	}
 
 	for _, key := range n.serviceOrder {
 		runtime := n.localServices[key]
@@ -279,19 +295,20 @@ func (n *Node) Start() error {
 func (n *Node) startRPCServer() error {
 	events := eventhandler.NewServerEventHandler()
 	events.OnAccept = func(_ xtnetNet.IServer, session xtnetNet.ISession) {
-		n.sessionsMu.Lock()
-		n.sessions[session] = struct{}{}
-		n.sessionsMu.Unlock()
+		remote := &RemoteNode{session: session}
+		session.SetUserData(remote)
+		n.remoteNodesMu.Lock()
+		n.remoteNodes[session] = remote
+		n.remoteNodesMu.Unlock()
 	}
 	events.OnSessionPacket = func(xtnetNet.IServer, xtnetNet.ISession, *packet.ReadPacket) {}
 	events.OnSessionClose = func(_ xtnetNet.IServer, session xtnetNet.ISession) {
-		n.sessionsMu.Lock()
-		delete(n.sessions, session)
-		n.sessionsMu.Unlock()
-		if n.IsMainNode() {
-			if nodeID, ok := session.GetUserData().(int); ok && nodeID != n.id {
-				n.registry.UnregisterNode(nodeID)
-			}
+		n.remoteNodesMu.Lock()
+		remote := n.remoteNodes[session]
+		delete(n.remoteNodes, session)
+		n.remoteNodesMu.Unlock()
+		if remote != nil && remote.id != 0 && n.IsMainNode() {
+			n.registry.UnregisterNode(remote.id)
 		}
 	}
 
@@ -360,8 +377,7 @@ func (n *Node) registerService(key ServiceKey) error {
 		return err
 	}
 	request := &rpcpb.RegisterRequest{
-		SourceNode: int64(n.id),
-		Location:   serviceLocationToProto(location),
+		Location: serviceLocationToProto(location),
 	}
 	return client.request(n.connectTimeout, opRegister, request, &rpcpb.RegisterResponse{})
 }
@@ -375,8 +391,7 @@ func (n *Node) unregisterService(key ServiceKey) error {
 		return err
 	}
 	request := &rpcpb.UnregisterRequest{
-		SourceNode: int64(n.id),
-		Target:     serviceKeyToProto(key),
+		Target: serviceKeyToProto(key),
 	}
 	return client.request(n.connectTimeout, opUnregister, request, &rpcpb.UnregisterResponse{})
 }
@@ -407,11 +422,10 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 		return err
 	}
 	err = client.send(opDeliver, &rpcpb.DeliverRequest{
-		SourceNode: int64(n.id),
-		Source:     serviceKeyToProto(source),
-		Target:     serviceKeyToProto(target),
-		MessageId:  messageID,
-		Payload:    payload,
+		Source:    serviceKeyToProto(source),
+		Target:    serviceKeyToProto(target),
+		MessageId: messageID,
+		Payload:   payload,
 	})
 	if err != nil {
 		n.routeCache.invalidate(target)
@@ -467,11 +481,10 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 	}
 	responseProtocol := &rpcpb.DeliverResponse{}
 	err = client.request(expireMS, opDeliver, &rpcpb.DeliverRequest{
-		SourceNode: int64(n.id),
-		Source:     serviceKeyToProto(source),
-		Target:     serviceKeyToProto(target),
-		MessageId:  messageID,
-		Payload:    payload,
+		Source:    serviceKeyToProto(source),
+		Target:    serviceKeyToProto(target),
+		MessageId: messageID,
+		Payload:   payload,
 	}, responseProtocol)
 	if err != nil {
 		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
@@ -539,8 +552,7 @@ func (n *Node) lookupServiceFromMain(key ServiceKey) (ServiceLocation, error) {
 	}
 	response := &rpcpb.LookupResponse{}
 	err = client.request(n.connectTimeout, opLookup, &rpcpb.LookupRequest{
-		SourceNode: int64(n.id),
-		Target:     serviceKeyToProto(key),
+		Target: serviceKeyToProto(key),
 	}, response)
 	if err != nil {
 		return ServiceLocation{}, err
@@ -580,6 +592,13 @@ func (n *Node) getRPCClient(nodeID int, addr string) (*RPCClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := client.request(n.connectTimeout, opRegisterNode, &rpcpb.RegisterNodeRequest{
+		NodeId:   int64(n.id),
+		NodeAddr: n.nodeConfig.ListenAddr,
+	}, &rpcpb.RegisterNodeResponse{}); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("register node %d with node %d: %w", n.id, nodeID, err)
+	}
 	n.rpcClients[nodeID] = client
 	return client, nil
 }
@@ -598,6 +617,10 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 		n.report(err)
 		return
 	}
+	if _, err := n.registeredRemoteNode(session); err != nil {
+		n.report(err)
+		return
+	}
 	switch op {
 	case opDeliver:
 		var request rpcpb.DeliverRequest
@@ -605,12 +628,11 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 			n.report(rpcInvalidMessage(err))
 			return
 		}
-		sourceNode, source, target, messageID, err := decodeDeliverRequest(&request)
+		source, target, messageID, err := decodeDeliverRequest(&request)
 		if err != nil {
 			n.report(rpcInvalidMessage(err))
 			return
 		}
-		n.rememberSourceNode(session, sourceNode)
 		if err := n.dispatchLocal(source, target, messageID, request.Payload, false, nil); err != nil {
 			n.report(err)
 		}
@@ -625,15 +647,20 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 		n.respondRPCError(session, contextID, rpcInvalidMessage(err))
 		return
 	}
+	if op == opRegisterNode {
+		n.handleRegisterNode(session, contextID, payload)
+		return
+	}
+	remoteNode, err := n.registeredRemoteNode(session)
+	if err != nil {
+		n.respondRPCError(session, contextID, err)
+		return
+	}
+	sourceNode := remoteNode.id
 	switch op {
 	case opRegister:
 		var request rpcpb.RegisterRequest
 		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
-			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
-			return
-		}
-		sourceNode, decodeErr := rpcSourceNode(request.SourceNode)
-		if decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
@@ -642,11 +669,10 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		n.rememberSourceNode(session, sourceNode)
 		if !n.IsMainNode() {
 			err = fmt.Errorf("node %d is not the main node", n.id)
-		} else if location.NodeID != sourceNode {
-			err = fmt.Errorf("register source node mismatch")
+		} else if location.NodeID != sourceNode || location.NodeAddr != remoteNode.addr {
+			err = fmt.Errorf("register location does not match registered node %d", sourceNode)
 		} else {
 			err = n.registry.Register(location)
 		}
@@ -661,17 +687,11 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		sourceNode, decodeErr := rpcSourceNode(request.SourceNode)
-		if decodeErr != nil {
-			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
-			return
-		}
 		target, decodeErr := requiredRPCServiceKey(request.Target, "unregister target")
 		if decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		n.rememberSourceNode(session, sourceNode)
 		if !n.IsMainNode() {
 			err = fmt.Errorf("node %d is not the main node", n.id)
 		} else {
@@ -688,17 +708,11 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		sourceNode, decodeErr := rpcSourceNode(request.SourceNode)
-		if decodeErr != nil {
-			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
-			return
-		}
 		target, decodeErr := requiredRPCServiceKey(request.Target, "lookup target")
 		if decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		n.rememberSourceNode(session, sourceNode)
 		if !n.IsMainNode() {
 			err = fmt.Errorf("node %d is not the main node", n.id)
 			n.respondRPCError(session, contextID, err)
@@ -718,12 +732,11 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		sourceNode, source, target, messageID, decodeErr := decodeDeliverRequest(&request)
+		source, target, messageID, decodeErr := decodeDeliverRequest(&request)
 		if decodeErr != nil {
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		n.rememberSourceNode(session, sourceNode)
 		err = n.dispatchLocal(source, target, messageID, request.Payload, true, func(responsePayload []byte, responseErr error) error {
 			if responseErr != nil {
 				n.respondRPCError(session, contextID, responseErr)
@@ -741,26 +754,22 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 	}
 }
 
-func decodeDeliverRequest(request *rpcpb.DeliverRequest) (int, ServiceKey, ServiceKey, uint32, error) {
-	sourceNode, err := rpcSourceNode(request.SourceNode)
-	if err != nil {
-		return 0, ServiceKey{}, ServiceKey{}, 0, err
-	}
+func decodeDeliverRequest(request *rpcpb.DeliverRequest) (ServiceKey, ServiceKey, uint32, error) {
 	source, err := serviceKeyFromProto(request.Source)
 	if err != nil {
-		return 0, ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver source: %w", err)
+		return ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver source: %w", err)
 	}
 	if source != (ServiceKey{}) && (source.Name == "" || source.ID <= 0) {
-		return 0, ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver source is invalid: %s", source)
+		return ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver source is invalid: %s", source)
 	}
 	target, err := requiredRPCServiceKey(request.Target, "deliver target")
 	if err != nil {
-		return 0, ServiceKey{}, ServiceKey{}, 0, err
+		return ServiceKey{}, ServiceKey{}, 0, err
 	}
 	if request.MessageId == 0 {
-		return 0, ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver message id is zero")
+		return ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver message id is zero")
 	}
-	return sourceNode, source, target, request.MessageId, nil
+	return source, target, request.MessageId, nil
 }
 
 func requiredRPCServiceKey(message *rpcpb.ServiceKey, name string) (ServiceKey, error) {
@@ -785,25 +794,89 @@ func requiredRPCServiceLocation(message *rpcpb.ServiceLocation, name string) (Se
 	return location, nil
 }
 
-func rpcSourceNode(value int64) (int, error) {
-	nodeID, err := rpcInt(value, "source node")
+func rpcNodeID(value int64) (int, error) {
+	nodeID, err := rpcInt(value, "node id")
 	if err != nil {
 		return 0, err
 	}
 	if nodeID <= 0 {
-		return 0, fmt.Errorf("source node must be positive")
+		return 0, fmt.Errorf("node id must be positive")
 	}
 	return nodeID, nil
 }
 
-func rpcInvalidMessage(err error) error {
-	return fmt.Errorf("%w: rpc protocol: %v", ErrInvalidMessage, err)
+func (n *Node) handleRegisterNode(session xtnetNet.ISession, contextID int32, payload []byte) {
+	var request rpcpb.RegisterNodeRequest
+	if err := decodeOperationPayload(payload, &request); err != nil {
+		n.respondRPCError(session, contextID, rpcInvalidMessage(err))
+		return
+	}
+	nodeID, err := rpcNodeID(request.NodeId)
+	if err != nil {
+		n.respondRPCError(session, contextID, rpcInvalidMessage(err))
+		return
+	}
+	configured, exists := n.config.Node(nodeID)
+	if !exists {
+		n.respondRPCError(session, contextID, fmt.Errorf("%w: id=%d", ErrNodeNotFound, nodeID))
+		return
+	}
+	if nodeID == n.id {
+		n.respondRPCError(session, contextID, rpcInvalidMessage(fmt.Errorf("node %d cannot register with itself", nodeID)))
+		return
+	}
+	if request.NodeAddr != configured.ListenAddr {
+		n.respondRPCError(session, contextID, rpcInvalidMessage(fmt.Errorf(
+			"node %d address %q does not match configured address %q",
+			nodeID, request.NodeAddr, configured.ListenAddr,
+		)))
+		return
+	}
+	n.remoteNodesMu.Lock()
+	remote := n.remoteNodes[session]
+	if remote == nil {
+		n.remoteNodesMu.Unlock()
+		n.respondRPCError(session, contextID, rpcInvalidMessage(fmt.Errorf("rpc session is not tracked")))
+		return
+	}
+	if remote.id != 0 {
+		n.remoteNodesMu.Unlock()
+		if remote.id == nodeID && remote.addr == request.NodeAddr {
+			_ = n.respondRPC(session, contextID, &rpcpb.RegisterNodeResponse{})
+			return
+		}
+		n.respondRPCError(session, contextID, rpcInvalidMessage(fmt.Errorf("rpc session is already registered as node %d", remote.id)))
+		return
+	}
+	var previous *RemoteNode
+	for _, candidate := range n.remoteNodes {
+		if candidate != remote && candidate.id == nodeID {
+			previous = candidate
+			delete(n.remoteNodes, candidate.session)
+			break
+		}
+	}
+	remote.id = nodeID
+	remote.addr = request.NodeAddr
+	n.remoteNodesMu.Unlock()
+	if previous != nil {
+		previous.session.Close(false)
+	}
+	_ = n.respondRPC(session, contextID, &rpcpb.RegisterNodeResponse{})
 }
 
-func (n *Node) rememberSourceNode(session xtnetNet.ISession, nodeID int) {
-	if nodeID > 0 {
-		session.SetUserData(nodeID)
+func (n *Node) registeredRemoteNode(session xtnetNet.ISession) (*RemoteNode, error) {
+	n.remoteNodesMu.RLock()
+	remote := n.remoteNodes[session]
+	n.remoteNodesMu.RUnlock()
+	if remote == nil || remote.id == 0 {
+		return nil, fmt.Errorf("%w: rpc session is not registered", ErrNodeNotFound)
 	}
+	return remote, nil
+}
+
+func rpcInvalidMessage(err error) error {
+	return fmt.Errorf("%w: rpc protocol: %v", ErrInvalidMessage, err)
 }
 
 func (n *Node) respondRPCError(session xtnetNet.ISession, contextID int32, err error) {
@@ -910,15 +983,15 @@ func (n *Node) closeNetwork() {
 		client.Close()
 	}
 
-	n.sessionsMu.Lock()
-	sessions := make([]xtnetNet.ISession, 0, len(n.sessions))
-	for session := range n.sessions {
-		sessions = append(sessions, session)
+	n.remoteNodesMu.Lock()
+	remoteNodes := make([]*RemoteNode, 0, len(n.remoteNodes))
+	for _, remote := range n.remoteNodes {
+		remoteNodes = append(remoteNodes, remote)
 	}
-	n.sessions = make(map[xtnetNet.ISession]struct{})
-	n.sessionsMu.Unlock()
-	for _, session := range sessions {
-		session.Close(false)
+	n.remoteNodes = make(map[xtnetNet.ISession]*RemoteNode)
+	n.remoteNodesMu.Unlock()
+	for _, remote := range remoteNodes {
+		remote.session.Close(false)
 	}
 	if n.rpcServer != nil {
 		n.rpcServer.Close()

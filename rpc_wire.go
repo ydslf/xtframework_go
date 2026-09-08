@@ -12,11 +12,12 @@ import (
 type operation = rpcpb.RpcOperation
 
 const (
-	opNone       operation = iota
-	opRegister             = rpcpb.RpcOperation_RPC_OPERATION_REGISTER
-	opUnregister           = rpcpb.RpcOperation_RPC_OPERATION_UNREGISTER
-	opLookup               = rpcpb.RpcOperation_RPC_OPERATION_LOOKUP
-	opDeliver              = rpcpb.RpcOperation_RPC_OPERATION_DELIVER
+	opNone         operation = iota
+	opRegisterNode           = rpcpb.RpcOperation_RPC_OPERATION_REGISTER_NODE
+	opRegister               = rpcpb.RpcOperation_RPC_OPERATION_REGISTER
+	opUnregister             = rpcpb.RpcOperation_RPC_OPERATION_UNREGISTER
+	opLookup                 = rpcpb.RpcOperation_RPC_OPERATION_LOOKUP
+	opDeliver                = rpcpb.RpcOperation_RPC_OPERATION_DELIVER
 )
 
 type operationProtocol interface {

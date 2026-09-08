@@ -15,7 +15,6 @@ func newRPCReadPacket(data []byte) *packet.ReadPacket {
 
 func TestRPCEnvelopeUsesOperationPrefix(t *testing.T) {
 	request := &rpcpb.RegisterRequest{
-		SourceNode: 2,
 		Location: &rpcpb.ServiceLocation{
 			ServiceName: "room",
 			ServiceId:   1,
@@ -101,20 +100,24 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 		message operationProtocol
 	}{
 		{
+			name: "register-node", op: opRegisterNode,
+			message: &rpcpb.RegisterNodeRequest{NodeId: 2, NodeAddr: "node-2"},
+		},
+		{
 			name: "register", op: opRegister,
-			message: &rpcpb.RegisterRequest{SourceNode: 2, Location: &rpcpb.ServiceLocation{ServiceName: "room", ServiceId: 1, NodeId: 2, NodeAddr: "node-2"}},
+			message: &rpcpb.RegisterRequest{Location: &rpcpb.ServiceLocation{ServiceName: "room", ServiceId: 1, NodeId: 2, NodeAddr: "node-2"}},
 		},
 		{
 			name: "unregister", op: opUnregister,
-			message: &rpcpb.UnregisterRequest{SourceNode: 2, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}},
+			message: &rpcpb.UnregisterRequest{Target: &rpcpb.ServiceKey{Name: "room", Id: 1}},
 		},
 		{
 			name: "lookup", op: opLookup,
-			message: &rpcpb.LookupRequest{SourceNode: 2, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}},
+			message: &rpcpb.LookupRequest{Target: &rpcpb.ServiceKey{Name: "room", Id: 1}},
 		},
 		{
 			name: "deliver", op: opDeliver,
-			message: &rpcpb.DeliverRequest{SourceNode: 2, Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, MessageId: 42, Payload: []byte{1}},
+			message: &rpcpb.DeliverRequest{Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, MessageId: 42, Payload: []byte{1}},
 		},
 	}
 
@@ -144,13 +147,12 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 
 func TestDecodeDeliverRequestValidatesMessageID(t *testing.T) {
 	request := &rpcpb.DeliverRequest{
-		SourceNode: 2,
-		Source:     &rpcpb.ServiceKey{},
-		Target:     &rpcpb.ServiceKey{Name: "room", Id: 1},
-		MessageId:  42,
+		Source:    &rpcpb.ServiceKey{},
+		Target:    &rpcpb.ServiceKey{Name: "room", Id: 1},
+		MessageId: 42,
 	}
 
-	_, _, _, messageID, err := decodeDeliverRequest(request)
+	_, _, messageID, err := decodeDeliverRequest(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +161,7 @@ func TestDecodeDeliverRequestValidatesMessageID(t *testing.T) {
 	}
 
 	request.MessageId = 0
-	if _, _, _, _, err := decodeDeliverRequest(request); err == nil {
+	if _, _, _, err := decodeDeliverRequest(request); err == nil {
 		t.Fatal("deliver request with zero message id was accepted")
 	}
 }
@@ -169,6 +171,7 @@ func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 		name    string
 		message operationProtocol
 	}{
+		{name: "register-node", message: &rpcpb.RegisterNodeResponse{}},
 		{name: "register", message: &rpcpb.RegisterResponse{}},
 		{name: "unregister", message: &rpcpb.UnregisterResponse{}},
 		{

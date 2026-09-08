@@ -6,10 +6,11 @@ option go_package = "xtframework/internal/rpcpb";
 
 enum RpcOperation {
   RPC_OPERATION_UNSPECIFIED = 0;
-  RPC_OPERATION_REGISTER = 1;
-  RPC_OPERATION_UNREGISTER = 2;
-  RPC_OPERATION_LOOKUP = 3;
-  RPC_OPERATION_DELIVER = 4;
+  RPC_OPERATION_REGISTER_NODE = 1;
+  RPC_OPERATION_REGISTER = 2;
+  RPC_OPERATION_UNREGISTER = 3;
+  RPC_OPERATION_LOOKUP = 4;
+  RPC_OPERATION_DELIVER = 5;
 }
 
 message RpcEnvelope {
@@ -35,23 +36,27 @@ message ServiceLocation {
   string node_addr = 4;
 }
 
+message RegisterNodeRequest {
+  int64 node_id = 1;
+  string node_addr = 2;
+}
+
+message RegisterNodeResponse {}
+
 message RegisterRequest {
-  int64 source_node = 1;
-  ServiceLocation location = 2;
+  ServiceLocation location = 1;
 }
 
 message RegisterResponse {}
 
 message UnregisterRequest {
-  int64 source_node = 1;
-  ServiceKey target = 2;
+  ServiceKey target = 1;
 }
 
 message UnregisterResponse {}
 
 message LookupRequest {
-  int64 source_node = 1;
-  ServiceKey target = 2;
+  ServiceKey target = 1;
 }
 
 message LookupResponse {
@@ -59,11 +64,10 @@ message LookupResponse {
 }
 
 message DeliverRequest {
-  int64 source_node = 1;
-  ServiceKey source = 2;
-  ServiceKey target = 3;
-  uint32 message_id = 4;
-  bytes payload = 5;
+  ServiceKey source = 1;
+  ServiceKey target = 2;
+  uint32 message_id = 3;
+  bytes payload = 4;
 }
 
 message DeliverResponse {
