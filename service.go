@@ -59,16 +59,25 @@ type BaseService struct {
 	node   *Node
 	config ServiceConfig
 	loop   *frame.Loop
+	logger Logger
 }
 
 func NewBaseService(node *Node, config ServiceConfig) BaseService {
-	return BaseService{node: node, config: config, loop: frame.NewLoop(frame.LoopSizeMin, true)}
+	var logger Logger
+	if node != nil {
+		logger = WithLogFields(node.Logger(),
+			LogField{Key: "service", Value: config.Name},
+			LogField{Key: "service_id", Value: config.ID},
+		)
+	}
+	return BaseService{node: node, config: config, loop: frame.NewLoop(frame.LoopSizeMin, true), logger: logger}
 }
 
 func (s *BaseService) Name() string          { return s.config.Name }
 func (s *BaseService) ID() int               { return s.config.ID }
 func (s *BaseService) Loop() *frame.Loop     { return s.loop }
 func (s *BaseService) Config() ServiceConfig { return s.config }
+func (s *BaseService) Logger() Logger        { return s.logger }
 func (s *BaseService) Start() error          { return nil }
 func (s *BaseService) Stop() error           { return nil }
 func (s *BaseService) HandleMessage(*MessageContext, uint32, []byte) error {

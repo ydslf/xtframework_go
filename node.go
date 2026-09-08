@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -49,6 +48,7 @@ func ensureXTNetLogger() {
 type nodeOptions struct {
 	factories      *FactoryRegistry
 	registry       ServiceRegistry
+	logger         Logger
 	connectTimeout time.Duration
 	routeCacheTTL  time.Duration
 	errorHandler   func(error)
@@ -62,6 +62,13 @@ func WithFactoryRegistry(registry *FactoryRegistry) NodeOption {
 
 func WithServiceRegistry(registry ServiceRegistry) NodeOption {
 	return func(options *nodeOptions) { options.registry = registry }
+}
+
+// WithLogger sets the shared logger used by the Node and all of its Services.
+// When logger is an *xtnet/log.Logger, it is also installed as xtnet's
+// process-wide logger.
+func WithLogger(logger Logger) NodeOption {
+	return func(options *nodeOptions) { options.logger = logger }
 }
 
 func WithConnectTimeout(timeout time.Duration) NodeOption {
@@ -101,6 +108,7 @@ type Node struct {
 	id         int
 	mainNodeID int
 	registry   ServiceRegistry
+	logger     Logger
 	rpcServer  xtnetNet.IServer
 
 	config         *Config
@@ -138,11 +146,9 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	options := nodeOptions{
 		factories:      defaultFactories,
 		registry:       NewMemoryRegistry(),
+		logger:         xtnet.GetLogger(),
 		connectTimeout: 5 * time.Second,
 		routeCacheTTL:  defaultRouteCacheTTL,
-		errorHandler: func(err error) {
-			log.Printf("xtframework: %v", err)
-		},
 	}
 	for _, apply := range optionList {
 		if apply != nil {
@@ -155,19 +161,27 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	if options.registry == nil {
 		return nil, fmt.Errorf("service registry is nil")
 	}
+	if options.logger == nil {
+		return nil, fmt.Errorf("logger is nil")
+	}
 	if options.connectTimeout <= 0 {
 		return nil, fmt.Errorf("connect timeout must be positive")
 	}
 	if options.routeCacheTTL < 0 {
 		return nil, fmt.Errorf("route cache TTL must not be negative")
 	}
+	if nativeLogger, ok := options.logger.(*xtlog.Logger); ok {
+		xtnet.SetLogger(nativeLogger)
+	}
+	nodeLogger := WithLogFields(options.logger, LogField{Key: "node", Value: nodeID})
 	if options.errorHandler == nil {
-		options.errorHandler = func(error) {}
+		options.errorHandler = func(err error) { nodeLogger.LogError("xtframework: %v", err) }
 	}
 	node := &Node{
 		id:             nodeID,
 		mainNodeID:     config.MainNode,
 		registry:       options.registry,
+		logger:         nodeLogger,
 		rpcClients:     make(map[int]*RPCClient),
 		config:         config,
 		nodeConfig:     nodeConfig,
@@ -213,6 +227,10 @@ func (n *Node) ID() int { return n.id }
 
 // MainNodeID 返回主节点 ID。
 func (n *Node) MainNodeID() int { return n.mainNodeID }
+
+// Logger returns the Node logger. It shares its underlying output with all
+// Service loggers created by this Node.
+func (n *Node) Logger() Logger { return n.logger }
 
 // ListenAddr 返回当前节点的内部 RPC 监听地址。
 func (n *Node) ListenAddr() string { return n.nodeConfig.ListenAddr }
