@@ -33,22 +33,10 @@ const defaultRouteCacheTTL = 30 * time.Second
 
 var byteOrder binary.ByteOrder = binary.BigEndian
 
-var xtnetLoggerOnce sync.Once
-
-func ensureXTNetLogger() {
-	xtnetLoggerOnce.Do(func() {
-		if xtnet.GetLogger() == nil {
-			// xtnet 假定进程中始终存在全局日志记录器。这里提供一个静默的
-			// 默认实现；应用程序可以在创建 Node 前安装自己的日志记录器。
-			xtnet.SetLogger(xtlog.NewLogger(".", xtlog.FileSizeMin, false, false))
-		}
-	})
-}
-
 type nodeOptions struct {
 	factories      *FactoryRegistry
 	registry       ServiceRegistry
-	logger         Logger
+	logger         *xtlog.Logger
 	connectTimeout time.Duration
 	routeCacheTTL  time.Duration
 	errorHandler   func(error)
@@ -64,10 +52,9 @@ func WithServiceRegistry(registry ServiceRegistry) NodeOption {
 	return func(options *nodeOptions) { options.registry = registry }
 }
 
-// WithLogger sets the shared logger used by the Node and all of its Services.
-// When logger is an *xtnet/log.Logger, it is also installed as xtnet's
-// process-wide logger.
-func WithLogger(logger Logger) NodeOption {
+// WithLogger sets the process-wide xtnet logger shared by the Node and all of
+// its Services. The caller owns an injected logger and must close it.
+func WithLogger(logger *xtlog.Logger) NodeOption {
 	return func(options *nodeOptions) { options.logger = logger }
 }
 
@@ -105,11 +92,13 @@ func (n *RemoteNode) Addr() string { return n.addr }
 // Node 表示一个框架进程。Node 的运行状态由框架内部管理，应用程序通过
 // 只读方法查询节点信息和服务信息。
 type Node struct {
-	id         int
-	mainNodeID int
-	registry   ServiceRegistry
-	logger     Logger
-	rpcServer  xtnetNet.IServer
+	id                int
+	mainNodeID        int
+	registry          ServiceRegistry
+	logger            Logger
+	ownedLogger       *xtlog.Logger
+	loggerReleaseOnce sync.Once
+	rpcServer         xtnetNet.IServer
 
 	config         *Config
 	nodeConfig     NodeConfig
@@ -134,7 +123,6 @@ type Node struct {
 }
 
 func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error) {
-	ensureXTNetLogger()
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -146,7 +134,6 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	options := nodeOptions{
 		factories:      defaultFactories,
 		registry:       NewMemoryRegistry(),
-		logger:         xtnet.GetLogger(),
 		connectTimeout: 5 * time.Second,
 		routeCacheTTL:  defaultRouteCacheTTL,
 	}
@@ -161,19 +148,41 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	if options.registry == nil {
 		return nil, fmt.Errorf("service registry is nil")
 	}
-	if options.logger == nil {
-		return nil, fmt.Errorf("logger is nil")
-	}
 	if options.connectTimeout <= 0 {
 		return nil, fmt.Errorf("connect timeout must be positive")
 	}
 	if options.routeCacheTTL < 0 {
 		return nil, fmt.Errorf("route cache TTL must not be negative")
 	}
-	if nativeLogger, ok := options.logger.(*xtlog.Logger); ok {
-		xtnet.SetLogger(nativeLogger)
+	nativeLogger := options.logger
+	var ownedLogger *xtlog.Logger
+	if nativeLogger == nil {
+		if nodeConfig.Logger == nil {
+			return nil, fmt.Errorf("node %d logger config is required when WithLogger is not provided", nodeID)
+		}
+		var err error
+		nativeLogger, err = newXTNetLogger(*nodeConfig.Logger)
+		if err != nil {
+			return nil, fmt.Errorf("create node %d logger: %w", nodeID, err)
+		}
+		ownedLogger = nativeLogger
 	}
-	nodeLogger := WithLogFields(options.logger, LogField{Key: "node", Value: nodeID})
+	previousLogger := xtnet.GetLogger()
+	xtnet.SetLogger(nativeLogger)
+	constructionSucceeded := false
+	defer func() {
+		if constructionSucceeded {
+			return
+		}
+		if xtnet.GetLogger() == nativeLogger {
+			xtnet.SetLogger(previousLogger)
+		}
+		if ownedLogger != nil {
+			ownedLogger.Close()
+		}
+	}()
+
+	nodeLogger := WithLogFields(nativeLogger, LogField{Key: "node", Value: nodeID})
 	if options.errorHandler == nil {
 		options.errorHandler = func(err error) { nodeLogger.LogError("xtframework: %v", err) }
 	}
@@ -182,6 +191,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		mainNodeID:     config.MainNode,
 		registry:       options.registry,
 		logger:         nodeLogger,
+		ownedLogger:    ownedLogger,
 		rpcClients:     make(map[int]*RPCClient),
 		config:         config,
 		nodeConfig:     nodeConfig,
@@ -197,7 +207,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 
 	loops := make(map[*frame.Loop]ServiceKey)
 	for _, serviceConfig := range nodeConfig.Services {
-		factory, found := options.factories.Get(serviceConfig.Name)
+		factory, found := node.factories.Get(serviceConfig.Name)
 		if !found {
 			return nil, fmt.Errorf("%w: %s", ErrFactoryNotFound, serviceConfig.Name)
 		}
@@ -219,6 +229,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		node.localServices[key] = &serviceRuntime{service: service}
 		node.serviceOrder = append(node.serviceOrder, key)
 	}
+	constructionSucceeded = true
 	return node, nil
 }
 
@@ -948,8 +959,13 @@ func (n *Node) report(err error) {
 func (n *Node) Stop() error {
 	n.shutdownMutex.Lock()
 	defer n.shutdownMutex.Unlock()
+	if n.state.CompareAndSwap(nodeStateInitial, nodeStateStopped) {
+		n.releaseLogger()
+		return nil
+	}
 	if !n.state.CompareAndSwap(nodeStateRunning, nodeStateStopping) {
 		if n.state.Load() == nodeStateStopped {
+			n.releaseLogger()
 			return nil
 		}
 		return ErrNodeStopped
@@ -975,7 +991,16 @@ func (n *Node) Stop() error {
 	n.rpcLoop.Close(false)
 	n.rpcLoopWG.Wait()
 	n.state.Store(nodeStateStopped)
+	n.releaseLogger()
 	return errors.Join(errs...)
+}
+
+func (n *Node) releaseLogger() {
+	n.loggerReleaseOnce.Do(func() {
+		if n.ownedLogger != nil {
+			n.ownedLogger.Close()
+		}
+	})
 }
 
 func (n *Node) stopService(runtime *serviceRuntime) error {
@@ -1032,4 +1057,5 @@ func (n *Node) rollbackStart() {
 	n.rpcLoop.Close(false)
 	n.rpcLoopWG.Wait()
 	n.state.Store(nodeStateStopped)
+	n.releaseLogger()
 }

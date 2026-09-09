@@ -75,3 +75,28 @@ func formatLogFields(fields []LogField) string {
 }
 
 var _ Logger = (*xtlog.Logger)(nil)
+
+func newXTNetLogger(config LoggerConfig) (*xtlog.Logger, error) {
+	level, err := parseLogLevel(config.Level)
+	if err != nil {
+		return nil, err
+	}
+	logger := xtlog.NewLogger(config.Dir, config.FileSize, config.Screen, config.Async)
+	logger.SetLogLevel(level)
+	return logger, nil
+}
+
+func parseLogLevel(level string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "none":
+		return xtlog.LevelNone, nil
+	case "error":
+		return xtlog.LevelError, nil
+	case "warn":
+		return xtlog.LevelWarn, nil
+	case "debug":
+		return xtlog.LevelDebug, nil
+	default:
+		return 0, fmt.Errorf("level %q must be one of none, error, warn, debug", level)
+	}
+}

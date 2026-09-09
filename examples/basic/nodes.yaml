@@ -2,12 +2,24 @@ main_node: 1
 nodes:
   - id: 1
     listen_addr: "127.0.0.1:7001"
+    logger:
+      dir: "./logs/node_1"
+      level: "debug"
+      file_size: 67108864
+      screen: true
+      async: true
     services:
       - name: center
         id: 1
 
   - id: 2
     listen_addr: "127.0.0.1:7002"
+    logger:
+      dir: "./logs/node_2"
+      level: "debug"
+      file_size: 67108864
+      screen: true
+      async: true
     services:
       - name: room
         id: 1

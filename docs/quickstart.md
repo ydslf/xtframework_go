@@ -2,7 +2,9 @@
 
 ## 启动模型
 
-应用先加载完整集群配置，再以当前进程的 Node ID 创建一个 `Node`。`Node.Start` 按以下顺序执行：
+应用先加载完整集群配置，再以当前进程的 Node ID 创建一个 `Node`。框架约定一个
+进程只运行一个 Node；Node 创建时会从自己的 `logger` 配置创建并安装 xtnet 的
+进程级 Logger。`Node.Start` 按以下顺序执行：
 
 1. 启动 Node 控制 Loop 和内部 TCP RPC Server。
 2. 通过注册的 Factory 创建并启动本地 Service。

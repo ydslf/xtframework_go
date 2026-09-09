@@ -31,7 +31,7 @@ func (s *exampleService) HandleMessage(ctx *xtframework.MessageContext, messageI
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return err
 	}
-	log.Printf("service %s:%d received %q from %s", s.Name(), s.ID(), request.Text, ctx.Source())
+	s.Logger().LogDebug("received %q from %s", request.Text, ctx.Source())
 	if ctx.IsRequest() {
 		response, err := json.Marshal(&pong{Text: "pong: " + request.Text})
 		if err != nil {

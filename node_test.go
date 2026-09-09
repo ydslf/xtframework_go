@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"xtframework/internal/rpcpb"
+	xtlog "xtnet/log"
 )
 
 const (
@@ -78,6 +79,14 @@ func freeAddress(t *testing.T) string {
 	return address
 }
 
+func newTestXTLogger(t *testing.T) *xtlog.Logger {
+	t.Helper()
+	logger := xtlog.NewLogger(t.TempDir(), xtlog.FileSizeMin, false, false)
+	logger.SetLogLevel(xtlog.LevelNone)
+	t.Cleanup(logger.Close)
+	return logger
+}
+
 func waitMessage(t *testing.T, ch <-chan string, want string) {
 	t.Helper()
 	select {
@@ -116,12 +125,13 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 			{ID: 2, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "room", ID: 1}, {Name: "room", ID: 2}}},
 		},
 	}
+	logger := newTestXTLogger(t)
 
-	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories))
+	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}
-	roomNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories))
+	roomNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories), WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +214,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 
 func TestNewNodeRequiresFactory(t *testing.T) {
 	cfg := &Config{MainNode: 1, Nodes: []NodeConfig{{ID: 1, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "missing", ID: 1}}}}}
-	_, err := NewNode(cfg, 1, WithFactoryRegistry(NewFactoryRegistry()))
+	_, err := NewNode(cfg, 1, WithFactoryRegistry(NewFactoryRegistry()), WithLogger(newTestXTLogger(t)))
 	if !errors.Is(err, ErrFactoryNotFound) {
 		t.Fatalf("NewNode() error = %v", err)
 	}
@@ -225,7 +235,8 @@ func TestNodeStartRollsBackRegisteredServices(t *testing.T) {
 			{ID: 2, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "room", ID: 1}, {Name: "center", ID: 1}}},
 		},
 	}
-	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories))
+	logger := newTestXTLogger(t)
+	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +245,7 @@ func TestNodeStartRollsBackRegisteredServices(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mainNode.Stop() })
 
-	secondNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories))
+	secondNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories), WithLogger(logger))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,9 +271,11 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 		},
 	}
 	registry := &countingRegistry{MemoryRegistry: NewMemoryRegistry()}
+	logger := newTestXTLogger(t)
 	mainNode, err := NewNode(cfg, 1,
 		WithFactoryRegistry(factories),
 		WithServiceRegistry(registry),
+		WithLogger(logger),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -270,6 +283,7 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 	senderNode, err := NewNode(cfg, 2,
 		WithFactoryRegistry(factories),
 		WithRouteCacheTTL(time.Minute),
+		WithLogger(logger),
 	)
 	if err != nil {
 		t.Fatal(err)

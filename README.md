@@ -21,12 +21,24 @@ main_node: 1
 nodes:
   - id: 1
     listen_addr: "127.0.0.1:7001"
+    logger:
+      dir: "./logs/node_1"
+      level: "debug"
+      file_size: 67108864
+      screen: true
+      async: true
     services:
       - name: center
         id: 1
 
   - id: 2
     listen_addr: "127.0.0.1:7002"
+    logger:
+      dir: "./logs/node_2"
+      level: "debug"
+      file_size: 67108864
+      screen: true
+      async: true
     services:
       - name: room
         id: 1
@@ -77,14 +89,23 @@ defer node.Stop()
 
 ## 日志
 
-框架定义了自己的 `Logger` 接口；`*xtnet/log.Logger` 可直接实现该接口。一个
-Node 及其全部 Service 共享同一个底层 Logger，Node 日志自动带有 `node` 字段，
-`BaseService.Logger()` 返回的日志器还会带有 `service` 和 `service_id` 字段。
+框架约定一个进程只运行一个 Node。每个 Node 从自己的 `logger` 配置创建
+`*xtnet/log.Logger`，并将其同时用于 xtnet、Node 和全部 Service。Node 日志自动
+带有 `node` 字段，`BaseService.Logger()` 返回的日志器还会带有 `service` 和
+`service_id` 字段。不同 Node 的 `logger.dir` 必须不同。
+
+```go
+node, err := xtframework.NewNode(cfg, 1,
+    xtframework.WithFactoryRegistry(factories),
+)
+```
+
+也可以显式注入 Logger，以覆盖 YAML 配置：
 
 ```go
 logger := xtlog.NewLogger("./logs", xtlog.FileSizeMax, true, true)
 logger.SetLogLevel(xtlog.LevelDebug)
-defer logger.Close() // Logger 由应用统一关闭，不由单个 Node 或 Service 关闭
+defer logger.Close()
 
 node, err := xtframework.NewNode(cfg, 1,
     xtframework.WithFactoryRegistry(factories),
@@ -92,9 +113,8 @@ node, err := xtframework.NewNode(cfg, 1,
 )
 ```
 
-当 `WithLogger` 接收的是 `*xtnet/log.Logger` 时，框架也会将它安装为 xtnet 的
-进程级 Logger。自定义 `Logger` 实现只接收框架、Node 和 Service 产生的日志；
-如需同时接收 xtnet 网络层日志，需要另外为 xtnet 提供兼容的日志实现。
+YAML 创建的 Logger 由 Node 在停止或启动失败时关闭；通过 `WithLogger` 注入的
+Logger 由调用方关闭。Service 不拥有 Logger，也不应调用 `Close()`。
 
 `Node` 的运行状态和内部容器均由框架管理。可通过 `ID()`、`MainNodeID()`、
 `ListenAddr()`、`LocalService()`、`LocalServices()`、`RegisteredService()` 等

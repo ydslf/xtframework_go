@@ -3,9 +3,11 @@ package xtframework
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	xtlog "xtnet/log"
 )
 
 // Config 描述一次部署中的所有节点。进程通过向 NewNode 传入节点 ID，
@@ -18,7 +20,18 @@ type Config struct {
 type NodeConfig struct {
 	ID         int             `yaml:"id"`
 	ListenAddr string          `yaml:"listen_addr"`
+	Logger     *LoggerConfig   `yaml:"logger,omitempty"`
 	Services   []ServiceConfig `yaml:"services,omitempty"`
+}
+
+// LoggerConfig describes the process-wide xtnet logger used by one Node.
+// A deployment process is expected to run exactly one Node.
+type LoggerConfig struct {
+	Dir      string `yaml:"dir"`
+	Level    string `yaml:"level"`
+	FileSize int    `yaml:"file_size"`
+	Screen   bool   `yaml:"screen"`
+	Async    bool   `yaml:"async"`
 }
 
 type ServiceConfig struct {
@@ -55,6 +68,7 @@ func (c *Config) Validate() error {
 
 	nodeIDs := make(map[int]struct{}, len(c.Nodes))
 	addresses := make(map[string]int, len(c.Nodes))
+	logDirs := make(map[string]int, len(c.Nodes))
 	mainFound := false
 	for i := range c.Nodes {
 		n := &c.Nodes[i]
@@ -77,6 +91,27 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("nodes[%d].listen_addr %q is also used by node %d", i, n.ListenAddr, owner)
 		}
 		addresses[n.ListenAddr] = n.ID
+
+		if n.Logger != nil {
+			logDir := strings.TrimSpace(n.Logger.Dir)
+			if logDir == "" {
+				return fmt.Errorf("nodes[%d].logger.dir must not be empty", i)
+			}
+			n.Logger.Dir = filepath.Clean(logDir)
+			logDirKey := strings.ToLower(n.Logger.Dir)
+			if owner, exists := logDirs[logDirKey]; exists {
+				return fmt.Errorf("nodes[%d].logger.dir %q is also used by node %d", i, n.Logger.Dir, owner)
+			}
+			logDirs[logDirKey] = n.ID
+
+			n.Logger.Level = strings.ToLower(strings.TrimSpace(n.Logger.Level))
+			if _, err := parseLogLevel(n.Logger.Level); err != nil {
+				return fmt.Errorf("nodes[%d].logger: %w", i, err)
+			}
+			if n.Logger.FileSize < xtlog.FileSizeMin || n.Logger.FileSize > xtlog.FileSizeMax {
+				return fmt.Errorf("nodes[%d].logger.file_size must be between %d and %d", i, xtlog.FileSizeMin, xtlog.FileSizeMax)
+			}
+		}
 
 		services := make(map[ServiceKey]struct{}, len(n.Services))
 		for j := range n.Services {
