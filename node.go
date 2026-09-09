@@ -438,7 +438,7 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 		return ErrInvalidMessage
 	}
 	if _, local := n.localServices[target]; local {
-		return n.dispatchLocal(source, target, messageID, payload, false, nil)
+		return n.dispatchLocalDirect(source, target, messageID, payload)
 	}
 
 	location, err := n.lookupService(target)
@@ -482,7 +482,7 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 			err     error
 		}
 		responses := make(chan localResponse, 1)
-		err := n.dispatchLocal(source, target, messageID, payload, true, func(responsePayload []byte, responseErr error) error {
+		err := n.dispatchLocalRequest(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
 			responses <- localResponse{payload: responsePayload, err: responseErr}
 			return nil
 		})
@@ -524,39 +524,55 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 	return responseProtocol.Payload, nil
 }
 
-func (n *Node) dispatchLocal(source, target ServiceKey, messageID uint32, payload []byte, request bool, responder func([]byte, error) error) error {
+func (n *Node) dispatchLocalDirect(source, target ServiceKey, messageID uint32, payload []byte) error {
 	runtime, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
 	}
 	service := runtime.service
 	messageContext := &MessageContext{
-		source:  source,
-		target:  target,
-		request: request,
-		respond: responder,
+		source: source,
+		target: target,
 	}
 	service.Loop().Post(func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				err := fmt.Errorf("service %s panic: %v\n%s", target, recovered, debug.Stack())
-				if request && !messageContext.responded.Load() {
-					_ = messageContext.respondWithError(nil, err)
-				} else {
-					n.report(err)
-				}
+				n.report(err)
 			}
 		}()
-		err := service.HandleMessage(messageContext, messageID, payload)
-		if request && !messageContext.responded.Load() {
-			if err == nil {
-				err = fmt.Errorf("service %s returned without responding", target)
-			}
-			if responseErr := messageContext.respondWithError(nil, err); responseErr != nil {
-				n.report(responseErr)
-			}
-		} else if err != nil {
+		if err := service.HandleRPCDirect(messageContext, messageID, payload); err != nil {
 			n.report(fmt.Errorf("handle message %d in service %s: %w", messageID, target, err))
+		}
+	})
+	return nil
+}
+
+type localResponder func([]byte, error) error
+
+func (n *Node) dispatchLocalRequest(source, target ServiceKey, messageID uint32, payload []byte, responder localResponder) error {
+	runtime, exists := n.localServices[target]
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
+	}
+	service := runtime.service
+	messageContext := &MessageContext{
+		source: source,
+		target: target,
+	}
+	service.Loop().Post(func() {
+		var responsePayload []byte
+		var responseErr error
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					responseErr = fmt.Errorf("service %s panic: %v\n%s", target, recovered, debug.Stack())
+				}
+			}()
+			responsePayload, responseErr = service.HandleRPCRequest(messageContext, messageID, payload)
+		}()
+		if err := responder(responsePayload, responseErr); err != nil {
+			n.report(fmt.Errorf("respond to message %d from service %s: %w", messageID, target, err))
 		}
 	})
 	return nil
@@ -662,7 +678,7 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 			n.report(rpcInvalidMessage(err))
 			return
 		}
-		if err := n.dispatchLocal(source, target, messageID, request.Payload, false, nil); err != nil {
+		if err := n.dispatchLocalDirect(source, target, messageID, request.Payload); err != nil {
 			n.report(err)
 		}
 	default:
@@ -766,7 +782,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		err = n.dispatchLocal(source, target, messageID, request.Payload, true, func(responsePayload []byte, responseErr error) error {
+		err = n.dispatchLocalRequest(source, target, messageID, request.Payload, func(responsePayload []byte, responseErr error) error {
 			if responseErr != nil {
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
@@ -911,6 +927,7 @@ func rpcInvalidMessage(err error) error {
 func (n *Node) respondRPCError(session xtnetNet.ISession, contextID int32, err error) {
 	var code, errMessage string
 	if err != nil {
+		code = "rpc_error"
 		errMessage = err.Error()
 		switch {
 		case errors.Is(err, ErrServiceNotFound):

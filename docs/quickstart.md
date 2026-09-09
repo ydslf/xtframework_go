@@ -35,14 +35,14 @@ replyPayload, err := service.CallService(
 )
 ```
 
-目标 Service 必须在 `HandleMessage` 内调用一次 `ctx.Respond(replyPayload)`。响应不携带消息号。未响应、重复响应、处理器 panic 或返回错误都会转换为调用错误。`CallService` 会等待结果，因此不要在延迟敏感的 Service Loop 中进行长超时同步等待；可由业务层启动 goroutine，或封装自己的异步回调模式。
+目标 Service 在 `HandleRPCRequest` 中返回响应负载和错误；响应不携带消息号。处理器 panic 或返回的错误都会转换为调用错误。处理器返回后不得再修改或复用响应负载。`CallService` 会等待结果，因此不要在延迟敏感的 Service Loop 中进行长超时同步等待。
 
 ## 应用层编解码
 
 Service 收到消息号和原始负载后自行解码：
 
 ```go
-func (s *Room) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+func (s *Room) HandleRPCDirect(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
     switch messageID {
     case 1001:
         var request gamepb.PlayerEnter
@@ -54,6 +54,19 @@ func (s *Room) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, 
     default:
         return fmt.Errorf("unknown message id %d", messageID)
     }
+}
+
+func (s *Room) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+    switch messageID {
+    case 1002:
+        var request gamepb.PlayerQuery
+		if err := proto.Unmarshal(payload, &request); err != nil {
+			return nil, err
+		}
+		return proto.Marshal(&gamepb.PlayerReply{/* ... */})
+    default:
+		return nil, fmt.Errorf("unknown message id %d", messageID)
+	}
 }
 ```
 

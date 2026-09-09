@@ -3,7 +3,6 @@ package xtframework
 import (
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"xtnet/frame"
@@ -17,7 +16,8 @@ type Service interface {
 	Loop() *frame.Loop
 	Start() error
 	Stop() error
-	HandleMessage(*MessageContext, uint32, []byte) error
+	HandleRPCDirect(*MessageContext, uint32, []byte) error
+	HandleRPCRequest(*MessageContext, uint32, []byte) ([]byte, error)
 }
 
 type FactoryRegistry struct {
@@ -80,8 +80,11 @@ func (s *BaseService) Config() ServiceConfig { return s.config }
 func (s *BaseService) Logger() Logger        { return s.logger }
 func (s *BaseService) Start() error          { return nil }
 func (s *BaseService) Stop() error           { return nil }
-func (s *BaseService) HandleMessage(*MessageContext, uint32, []byte) error {
+func (s *BaseService) HandleRPCDirect(*MessageContext, uint32, []byte) error {
 	return fmt.Errorf("service %s:%d does not handle messages", s.Name(), s.ID())
+}
+func (s *BaseService) HandleRPCRequest(*MessageContext, uint32, []byte) ([]byte, error) {
+	return nil, fmt.Errorf("service %s:%d does not handle requests", s.Name(), s.ID())
 }
 
 // Send2Service 异步发送一条业务消息。调用后，调用者不得再修改或复用 payload。
@@ -100,28 +103,9 @@ func (s *BaseService) CallService(expireMS time.Duration, serviceName string, se
 }
 
 type MessageContext struct {
-	source    ServiceKey
-	target    ServiceKey
-	request   bool
-	responded atomic.Bool
-	respond   func([]byte, error) error
+	source ServiceKey
+	target ServiceKey
 }
 
 func (c *MessageContext) Source() ServiceKey { return c.source }
 func (c *MessageContext) Target() ServiceKey { return c.target }
-func (c *MessageContext) IsRequest() bool    { return c.request }
-
-// Respond 返回请求结果。调用后，调用者不得再修改或复用 payload。
-func (c *MessageContext) Respond(payload []byte) error {
-	return c.respondWithError(payload, nil)
-}
-
-func (c *MessageContext) respondWithError(payload []byte, responseErr error) error {
-	if !c.request || c.respond == nil {
-		return ErrNotRequest
-	}
-	if !c.responded.CompareAndSwap(false, true) {
-		return ErrAlreadyResponded
-	}
-	return c.respond(payload, responseErr)
-}

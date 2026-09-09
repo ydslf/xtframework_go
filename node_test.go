@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,7 +23,7 @@ type frameworkTestService struct {
 	received chan string
 }
 
-func (s *frameworkTestService) HandleMessage(ctx *MessageContext, messageID uint32, payload []byte) error {
+func (s *frameworkTestService) HandleRPCDirect(_ *MessageContext, messageID uint32, payload []byte) error {
 	if messageID != testRequestID {
 		return fmt.Errorf("unexpected message id %d", messageID)
 	}
@@ -31,10 +32,17 @@ func (s *frameworkTestService) HandleMessage(ctx *MessageContext, messageID uint
 	case s.received <- text:
 	default:
 	}
-	if ctx.IsRequest() {
-		return ctx.Respond([]byte("reply:" + text))
-	}
 	return nil
+}
+
+func (s *frameworkTestService) HandleRPCRequest(ctx *MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+	if string(payload) == "panic" {
+		panic("request panic")
+	}
+	if err := s.HandleRPCDirect(ctx, messageID, payload); err != nil {
+		return nil, err
+	}
+	return []byte("reply:" + string(payload)), nil
 }
 
 type serviceCollector struct {
@@ -193,6 +201,13 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	if got := string(response); got != "reply:local-call" {
 		t.Fatalf("local response = %q", got)
+	}
+
+	if _, err := roomNode.CallService(3*time.Second, "room", 2, testRequestID+1, []byte("invalid")); err == nil || !strings.Contains(err.Error(), "unexpected message id") {
+		t.Fatalf("local handler error = %v", err)
+	}
+	if _, err := mainNode.CallService(3*time.Second, "room", 1, testRequestID, []byte("panic")); err == nil || !strings.Contains(err.Error(), "request panic") {
+		t.Fatalf("remote handler panic = %v", err)
 	}
 
 	if _, err := mainNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing")); !errors.Is(err, ErrServiceNotFound) {

@@ -48,26 +48,28 @@ nodes:
 
 ## 快速开始
 
-业务 Service 通常嵌入 `BaseService`，并覆盖消息处理方法：
+业务 Service 通常嵌入 `BaseService`，并按需覆盖单向消息或请求处理方法：
 
 ```go
 type Echo struct {
     xtframework.BaseService
 }
 
-func (s *Echo) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+func (s *Echo) HandleRPCDirect(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
 	var request Request
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return err
 	}
-	if ctx.IsRequest() {
-		response, err := json.Marshal(&Reply{Text: "ok"})
-		if err != nil {
-			return err
-		}
-		return ctx.Respond(response)
-	}
+	// 处理单向消息
     return nil
+}
+
+func (s *Echo) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+	var request Request
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, err
+	}
+	return json.Marshal(&Reply{Text: "ok"})
 }
 ```
 

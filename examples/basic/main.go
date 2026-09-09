@@ -23,23 +23,29 @@ type exampleService struct {
 	xtframework.BaseService
 }
 
-func (s *exampleService) HandleMessage(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+func (s *exampleService) decodePing(ctx *xtframework.MessageContext, messageID uint32, payload []byte) (ping, error) {
 	if messageID != messagePing {
-		return fmt.Errorf("unknown message id %d", messageID)
+		return ping{}, fmt.Errorf("unknown message id %d", messageID)
 	}
 	var request ping
 	if err := json.Unmarshal(payload, &request); err != nil {
-		return err
+		return ping{}, err
 	}
 	s.Logger().LogDebug("received %q from %s", request.Text, ctx.Source())
-	if ctx.IsRequest() {
-		response, err := json.Marshal(&pong{Text: "pong: " + request.Text})
-		if err != nil {
-			return err
-		}
-		return ctx.Respond(response)
+	return request, nil
+}
+
+func (s *exampleService) HandleRPCDirect(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+	_, err := s.decodePing(ctx, messageID, payload)
+	return err
+}
+
+func (s *exampleService) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+	request, err := s.decodePing(ctx, messageID, payload)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	return json.Marshal(&pong{Text: "pong: " + request.Text})
 }
 
 func main() {
