@@ -26,17 +26,8 @@ type RPCClient struct {
 
 func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
 	c := &RPCClient{node: node, nodeID: nodeID, addr: addr}
-	connected := make(chan error, 1)
 
 	events := eventhandler.NewClientEventHandler()
-	events.OnConnectSuccess = func(net.IClient) {
-		c.connected.Store(true)
-		connected <- nil
-	}
-	events.OnConnectFailed = func(net.IClient) {
-		c.connected.Store(false)
-		connected <- fmt.Errorf("connect node %d at %s failed", nodeID, addr)
-	}
 	events.OnClientPacket = func(net.IClient, *packet.ReadPacket) {}
 	events.OnConnectionBroken = func(net.IClient) {
 		c.connected.Store(false)
@@ -52,18 +43,11 @@ func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
 
 	client := tcp.NewClient(addr, agent)
 	c.client, c.netRPC = client, netRPC
-	if !client.Connect() {
-		return nil, fmt.Errorf("connect node %d at %s: invalid client state", nodeID, addr)
+	if err := client.ConnectSync(node.connectTimeout); err != nil {
+		return nil, fmt.Errorf("connect node %d at %s: %w", nodeID, addr, err)
 	}
-	select {
-	case err := <-connected:
-		return c, err
-	case <-time.After(node.connectTimeout):
-		if client.GetSession() != nil {
-			client.Close(false)
-		}
-		return nil, fmt.Errorf("connect node %d at %s: timeout after %s", nodeID, addr, node.connectTimeout)
-	}
+	c.connected.Store(true)
+	return c, nil
 }
 
 func (c *RPCClient) NodeID() int     { return c.nodeID }
