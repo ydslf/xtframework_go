@@ -92,33 +92,32 @@ func (n *RemoteNode) Addr() string { return n.addr }
 // Node 表示一个框架进程。Node 的运行状态由框架内部管理，应用程序通过
 // 只读方法查询节点信息和服务信息。
 type Node struct {
-	id                int
-	mainNodeID        int
-	registry          ServiceRegistry
+	id         int
+	mainNodeID int
+	state      atomic.Int32
+	config     *Config
+	nodeConfig NodeConfig
+
 	logger            Logger
 	ownedLogger       *xtlog.Logger
 	loggerReleaseOnce sync.Once
-	rpcServer         xtnetNet.IServer
+	errorHandler      func(error)
 
-	config         *Config
-	nodeConfig     NodeConfig
-	factories      *FactoryRegistry
-	connectTimeout time.Duration
-	routeCache     *serviceRouteCache
-	errorHandler   func(error)
-
-	state atomic.Int32
-
-	rpcLoop   *frame.Loop
-	rpcLoopWG sync.WaitGroup
-	serverRPC rpc.IRpc
-
-	localServices map[ServiceKey]*serviceRuntime
+	factories     *FactoryRegistry
 	serviceOrder  []ServiceKey
-	clientsMu     sync.Mutex
-	rpcClients    map[int]*RPCClient
+	localServices map[ServiceKey]*serviceRuntime
+
+	rpcServer     xtnetNet.IServer
+	serverRPC     rpc.IRpc
 	remoteNodesMu sync.RWMutex
 	remoteNodes   map[xtnetNet.ISession]*RemoteNode
+	registry      ServiceRegistry
+
+	connectTimeout time.Duration
+	clientsMu      sync.Mutex
+	rpcClients     map[int]*RPCClient
+	routeCache     *serviceRouteCache
+
 	shutdownMutex sync.Mutex
 }
 
@@ -199,7 +198,6 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		connectTimeout: options.connectTimeout,
 		routeCache:     newServiceRouteCache(options.routeCacheTTL),
 		errorHandler:   options.errorHandler,
-		rpcLoop:        frame.NewLoop(frame.LoopSizeMin, true),
 		localServices:  make(map[ServiceKey]*serviceRuntime),
 		remoteNodes:    make(map[xtnetNet.ISession]*RemoteNode),
 	}
@@ -291,8 +289,6 @@ func (n *Node) Start() error {
 		return ErrNodeRunning
 	}
 
-	startFrameLoop(n.rpcLoop, &n.rpcLoopWG)
-
 	if err := n.startRPCServer(); err != nil {
 		n.rollbackStart()
 		return err
@@ -341,10 +337,11 @@ func (n *Node) startRPCServer() error {
 		}
 	}
 
-	n.serverRPC = rpc.NewNoSync(n.rpcLoop)
+	dispatcher := frame.NewDirectDispatcher()
+	n.serverRPC = rpc.NewSync(dispatcher)
 	n.serverRPC.SetOnRpcDirect(n.handleRPCDirect)
 	n.serverRPC.SetOnRpcRequest(n.handleRPCRequest)
-	agent := serveragent.NewInternal(n.rpcLoop, byteOrder)
+	agent := serveragent.NewInternal(dispatcher, byteOrder)
 	agent.SetEventHandler(events)
 	agent.SetNetRpc(n.serverRPC)
 	n.rpcServer = tcp.NewServer(n.nodeConfig.ListenAddr, agent)
@@ -958,10 +955,6 @@ func (n *Node) respondRPC(session xtnetNet.ISession, contextID int32, response o
 	return nil
 }
 
-func (n *Node) postRPC(call func()) {
-	n.rpcLoop.Post(call)
-}
-
 func (n *Node) operational() bool {
 	state := n.state.Load()
 	return state == nodeStateStarting || state == nodeStateRunning
@@ -1005,8 +998,6 @@ func (n *Node) Stop() error {
 			errs = append(errs, err)
 		}
 	}
-	n.rpcLoop.Close(false)
-	n.rpcLoopWG.Wait()
 	n.state.Store(nodeStateStopped)
 	n.releaseLogger()
 	return errors.Join(errs...)
@@ -1071,8 +1062,6 @@ func (n *Node) rollbackStart() {
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
 		_ = n.stopService(n.localServices[n.serviceOrder[i]])
 	}
-	n.rpcLoop.Close(false)
-	n.rpcLoopWG.Wait()
 	n.state.Store(nodeStateStopped)
 	n.releaseLogger()
 }

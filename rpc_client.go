@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"xtnet/frame"
 	"xtnet/net"
 	clientagent "xtnet/net/agent/client"
 	"xtnet/net/eventhandler"
@@ -34,10 +35,11 @@ func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
 		node.removeRPCClient(nodeID, c)
 	}
 
-	netRPC := rpc.NewSync(node.rpcLoop)
+	dispatcher := frame.NewDirectDispatcher()
+	netRPC := rpc.NewSync(dispatcher)
 	netRPC.SetOnRpcDirect(func(net.ISession, *packet.ReadPacket) {})
 	netRPC.SetOnRpcRequest(func(net.ISession, int32, *packet.ReadPacket) {})
-	agent := clientagent.NewInternal(node.rpcLoop, byteOrder)
+	agent := clientagent.NewInternal(dispatcher, byteOrder)
 	agent.SetEventHandler(events)
 	agent.SetNetRpc(netRPC)
 

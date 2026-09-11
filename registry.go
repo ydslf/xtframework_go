@@ -23,6 +23,10 @@ func (l ServiceLocation) Key() ServiceKey {
 	return ServiceKey{Name: l.ServiceName, ID: l.ServiceID}
 }
 
+// ServiceRegistry 用于保存和查询 Service 的位置信息。
+//
+// 实现必须保证并发安全。Node 可能从多个 RPC session 和应用程序
+// goroutine 中并发调用这些方法。
 type ServiceRegistry interface {
 	Register(ServiceLocation) error
 	Unregister(ServiceKey, int) error
