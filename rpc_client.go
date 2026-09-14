@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"xtframework/internal/rpcpb"
 	"xtnet/frame"
 	"xtnet/net"
 	clientagent "xtnet/net/agent/client"
@@ -33,11 +34,14 @@ func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
 	events.OnConnectionBroken = func(net.IClient) {
 		c.connected.Store(false)
 		node.removeRPCClient(nodeID, c)
+		if nodeID == node.mainNodeID {
+			node.routeCache.invalidateAll()
+		}
 	}
 
 	dispatcher := frame.NewDirectDispatcher()
 	netRPC := rpc.NewSync(dispatcher)
-	netRPC.SetOnRpcDirect(func(net.ISession, *packet.ReadPacket) {})
+	netRPC.SetOnRpcDirect(c.handleRPCDirect)
 	netRPC.SetOnRpcRequest(func(net.ISession, int32, *packet.ReadPacket) {})
 	agent := clientagent.NewInternal(dispatcher, byteOrder)
 	agent.SetEventHandler(events)
@@ -48,6 +52,9 @@ func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
 	if err := client.ConnectSync(node.connectTimeout); err != nil {
 		return nil, fmt.Errorf("connect node %d at %s: %w", nodeID, addr, err)
 	}
+	if nodeID == node.mainNodeID {
+		node.routeCache.invalidateAll()
+	}
 	c.connected.Store(true)
 	return c, nil
 }
@@ -55,6 +62,34 @@ func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
 func (c *RPCClient) NodeID() int     { return c.nodeID }
 func (c *RPCClient) Addr() string    { return c.addr }
 func (c *RPCClient) Connected() bool { return c.connected.Load() }
+
+func (c *RPCClient) handleRPCDirect(_ net.ISession, rpk *packet.ReadPacket) {
+	op, payload, err := decodeEnvelope(rpk)
+	if err != nil {
+		c.node.report(err)
+		return
+	}
+	switch op {
+	case opRouteInvalidate:
+		if c.nodeID != c.node.mainNodeID || c.node.IsMainNode() {
+			c.node.report(fmt.Errorf("route push from node %d is not allowed", c.nodeID))
+			return
+		}
+		var notification rpcpb.RouteInvalidate
+		if err := decodeOperationPayload(payload, &notification); err != nil {
+			c.node.report(rpcInvalidMessage(err))
+			return
+		}
+		key, err := requiredRPCServiceKey(notification.Target, "route invalidate target")
+		if err != nil {
+			c.node.report(rpcInvalidMessage(err))
+			return
+		}
+		c.node.routeCache.invalidate(key)
+	default:
+		c.node.report(fmt.Errorf("unsupported pushed rpc operation %d", op))
+	}
+}
 
 func (c *RPCClient) send(op operation, message operationProtocol) error {
 	session := c.client.GetSession()

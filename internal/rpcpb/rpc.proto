@@ -11,6 +11,7 @@ enum RpcOperation {
   RPC_OPERATION_UNREGISTER = 3;
   RPC_OPERATION_LOOKUP = 4;
   RPC_OPERATION_DELIVER = 5;
+  RPC_OPERATION_ROUTE_INVALIDATE = 6;
 }
 
 message RpcEnvelope {
@@ -61,6 +62,10 @@ message LookupRequest {
 
 message LookupResponse {
   ServiceLocation location = 1;
+}
+
+message RouteInvalidate {
+  ServiceKey target = 1;
 }
 
 message DeliverRequest {

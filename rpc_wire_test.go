@@ -119,6 +119,10 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 			name: "deliver", op: opDeliver,
 			message: &rpcpb.DeliverRequest{Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, MessageId: 42, Payload: []byte{1}},
 		},
+		{
+			name: "route-invalidate", op: opRouteInvalidate,
+			message: &rpcpb.RouteInvalidate{Target: &rpcpb.ServiceKey{Name: "room", Id: 1}},
+		},
 	}
 
 	for _, source := range protocols {

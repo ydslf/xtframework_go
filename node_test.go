@@ -334,3 +334,97 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 		t.Fatalf("main node lookup count = %d, want 1", got)
 	}
 }
+
+func TestNodePushesRouteInvalidationDuringServiceMigration(t *testing.T) {
+	collector := &serviceCollector{services: make(map[string]*frameworkTestService)}
+	factories := NewFactoryRegistry()
+	if err := factories.Register("room", collector.factory); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		MainNode: 1,
+		Nodes: []NodeConfig{
+			{ID: 1, ListenAddr: freeAddress(t)},
+			{ID: 2, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "room", ID: 1}}},
+			{ID: 3, ListenAddr: freeAddress(t)},
+			{ID: 4, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "room", ID: 1}}},
+		},
+	}
+	logger := newTestXTLogger(t)
+	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories), WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	senderNode, err := NewNode(cfg, 3,
+		WithFactoryRegistry(factories),
+		WithRouteCacheTTL(time.Hour),
+		WithLogger(logger),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newNode, err := NewNode(cfg, 4, WithFactoryRegistry(factories), WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mainNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mainNode.Stop() })
+	if err := oldNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	oldNodeStopped := false
+	t.Cleanup(func() {
+		if !oldNodeStopped {
+			_ = oldNode.Stop()
+		}
+	})
+	if err := senderNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = senderNode.Stop() })
+	newNodeStarted := false
+	t.Cleanup(func() {
+		if newNodeStarted {
+			_ = newNode.Stop()
+		}
+	})
+
+	key := ServiceKey{Name: "room", ID: 1}
+	if err := senderNode.Send2Service("room", 1, testRequestID, []byte("old")); err != nil {
+		t.Fatal(err)
+	}
+	waitMessage(t, collector.get(2, "room", 1).received, "old")
+	waitUntil(t, func() bool {
+		senderNode.routeCache.mu.Lock()
+		defer senderNode.routeCache.mu.Unlock()
+		_, cached := senderNode.routeCache.entries[key]
+		return cached
+	}, "sender node to cache the old route")
+
+	if err := oldNode.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	oldNodeStopped = true
+	waitUntil(t, func() bool {
+		senderNode.routeCache.mu.Lock()
+		defer senderNode.routeCache.mu.Unlock()
+		_, cached := senderNode.routeCache.entries[key]
+		return !cached
+	}, "sender node to receive the route invalidation")
+
+	if err := newNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	newNodeStarted = true
+	if err := senderNode.Send2Service("room", 1, testRequestID, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	waitMessage(t, collector.get(4, "room", 1).received, "new")
+}

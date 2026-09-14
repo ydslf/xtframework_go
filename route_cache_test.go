@@ -71,3 +71,67 @@ func TestServiceRouteCacheMergesConcurrentLookups(t *testing.T) {
 		t.Fatalf("concurrent loader calls = %d, want 1", got)
 	}
 }
+
+func TestServiceRouteCacheInvalidationRejectsInflightLookup(t *testing.T) {
+	cache := newServiceRouteCache(time.Hour)
+	key := ServiceKey{Name: "room", ID: 1}
+	oldLocation := ServiceLocation{ServiceName: "room", ServiceID: 1, NodeID: 2, NodeAddr: "127.0.0.1:7002"}
+	newLocation := ServiceLocation{ServiceName: "room", ServiceID: 1, NodeID: 3, NodeAddr: "127.0.0.1:7003"}
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var loads atomic.Int32
+	load := func() (ServiceLocation, error) {
+		if loads.Add(1) == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			return oldLocation, nil
+		}
+		return newLocation, nil
+	}
+
+	firstResult := make(chan ServiceLocation, 1)
+	go func() {
+		location, _ := cache.lookup(key, load)
+		firstResult <- location
+	}()
+	<-firstStarted
+
+	cache.invalidate(key)
+	second, err := cache.lookup(key, load)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != newLocation {
+		t.Fatalf("lookup after invalidation = %+v, want %+v", second, newLocation)
+	}
+
+	close(releaseFirst)
+	if first := <-firstResult; first != newLocation {
+		t.Fatalf("in-flight lookup after invalidation = %+v, want %+v", first, newLocation)
+	}
+	if got := loads.Load(); got != 2 {
+		t.Fatalf("loader calls = %d, want 2", got)
+	}
+}
+
+func TestServiceRouteCacheInvalidateAll(t *testing.T) {
+	cache := newServiceRouteCache(time.Hour)
+	key := ServiceKey{Name: "room", ID: 1}
+	location := ServiceLocation{ServiceName: "room", ServiceID: 1, NodeID: 2, NodeAddr: "127.0.0.1:7002"}
+	var loads atomic.Int32
+	load := func() (ServiceLocation, error) {
+		loads.Add(1)
+		return location, nil
+	}
+
+	if _, err := cache.lookup(key, load); err != nil {
+		t.Fatal(err)
+	}
+	cache.invalidateAll()
+	if _, err := cache.lookup(key, load); err != nil {
+		t.Fatal(err)
+	}
+	if got := loads.Load(); got != 2 {
+		t.Fatalf("loader calls after invalidateAll = %d, want 2", got)
+	}
+}

@@ -29,7 +29,7 @@ const (
 	nodeStateStopped
 )
 
-const defaultRouteCacheTTL = 30 * time.Second
+const defaultRouteCacheTTL = 30 * time.Minute
 
 var byteOrder binary.ByteOrder = binary.BigEndian
 
@@ -63,7 +63,8 @@ func WithConnectTimeout(timeout time.Duration) NodeOption {
 }
 
 // WithRouteCacheTTL 设置非主节点的 Service 路由缓存有效期。设置为 0
-// 可以禁用路由缓存；默认有效期为 30 秒。
+// 可以禁用路由缓存；默认有效期为 10 分钟。主节点会在路由变化时主动
+// 通知其他节点使对应缓存失效，TTL 用作通知丢失时的兜底。
 func WithRouteCacheTTL(ttl time.Duration) NodeOption {
 	return func(options *nodeOptions) { options.routeCacheTTL = ttl }
 }
@@ -110,13 +111,13 @@ type Node struct {
 	rpcServer     xtnetNet.IServer
 	serverRPC     rpc.IRpc
 	remoteNodesMu sync.RWMutex
-	remoteNodes   map[xtnetNet.ISession]*RemoteNode
-	registry      ServiceRegistry
+	remoteNodes   map[xtnetNet.ISession]*RemoteNode //所有node保存的session对应的远端node
+	registry      ServiceRegistry                   //主node保存的所有service地址
 
 	connectTimeout time.Duration
 	clientsMu      sync.Mutex
-	rpcClients     map[int]*RPCClient
-	routeCache     *serviceRouteCache
+	rpcClients     map[int]*RPCClient //所有node保存的连接远端node的RPCClient
+	routeCache     *serviceRouteCache //非主node保存的非本地service地址
 
 	shutdownMutex sync.Mutex
 }
@@ -333,7 +334,9 @@ func (n *Node) startRPCServer() error {
 		delete(n.remoteNodes, session)
 		n.remoteNodesMu.Unlock()
 		if remote != nil && remote.id != 0 && n.IsMainNode() {
+			keys := n.serviceKeysForNode(remote.id)
 			n.registry.UnregisterNode(remote.id)
+			n.broadcastRouteInvalidation(keys...)
 		}
 	}
 
@@ -396,7 +399,11 @@ func (n *Node) registerService(key ServiceKey) error {
 		NodeAddr:    n.nodeConfig.ListenAddr,
 	}
 	if n.IsMainNode() {
-		return n.registry.Register(location)
+		if err := n.registry.Register(location); err != nil {
+			return err
+		}
+		n.broadcastRouteInvalidation(key)
+		return nil
 	}
 	client, err := n.mainClient()
 	if err != nil {
@@ -410,7 +417,11 @@ func (n *Node) registerService(key ServiceKey) error {
 
 func (n *Node) unregisterService(key ServiceKey) error {
 	if n.IsMainNode() {
-		return n.registry.Unregister(key, n.id)
+		if err := n.registry.Unregister(key, n.id); err != nil {
+			return err
+		}
+		n.broadcastRouteInvalidation(key)
+		return nil
 	}
 	client, err := n.mainClient()
 	if err != nil {
@@ -723,6 +734,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			return
 		}
 		_ = n.respondRPC(session, contextID, &rpcpb.RegisterResponse{})
+		n.broadcastRouteInvalidation(location.Key())
 	case opUnregister:
 		var request rpcpb.UnregisterRequest
 		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
@@ -744,6 +756,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			return
 		}
 		_ = n.respondRPC(session, contextID, &rpcpb.UnregisterResponse{})
+		n.broadcastRouteInvalidation(target)
 	case opLookup:
 		var request rpcpb.LookupRequest
 		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
@@ -953,6 +966,43 @@ func (n *Node) respondRPC(session xtnetNet.ISession, contextID int32, response o
 	}
 	n.serverRPC.Respond(session, contextID, wpk)
 	return nil
+}
+
+func (n *Node) serviceKeysForNode(nodeID int) []ServiceKey {
+	locations := n.registry.List()
+	keys := make([]ServiceKey, 0, len(locations))
+	for _, location := range locations {
+		if location.NodeID == nodeID {
+			keys = append(keys, location.Key())
+		}
+	}
+	return keys
+}
+
+func (n *Node) broadcastRouteInvalidation(keys ...ServiceKey) {
+	if !n.IsMainNode() || len(keys) == 0 {
+		return
+	}
+	n.remoteNodesMu.RLock()
+	sessions := make([]xtnetNet.ISession, 0, len(n.remoteNodes))
+	for session, remote := range n.remoteNodes {
+		if remote.id != 0 {
+			sessions = append(sessions, session)
+		}
+	}
+	n.remoteNodesMu.RUnlock()
+
+	for _, key := range keys {
+		message := &rpcpb.RouteInvalidate{Target: serviceKeyToProto(key)}
+		for _, session := range sessions {
+			wpk, err := encodeEnvelope(opRouteInvalidate, message)
+			if err != nil {
+				n.report(err)
+				return
+			}
+			n.serverRPC.SendDirect(session, wpk)
+		}
+	}
 }
 
 func (n *Node) operational() bool {

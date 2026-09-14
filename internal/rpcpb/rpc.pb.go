@@ -24,12 +24,13 @@ const (
 type RpcOperation int32
 
 const (
-	RpcOperation_RPC_OPERATION_UNSPECIFIED   RpcOperation = 0
-	RpcOperation_RPC_OPERATION_REGISTER_NODE RpcOperation = 1
-	RpcOperation_RPC_OPERATION_REGISTER      RpcOperation = 2
-	RpcOperation_RPC_OPERATION_UNREGISTER    RpcOperation = 3
-	RpcOperation_RPC_OPERATION_LOOKUP        RpcOperation = 4
-	RpcOperation_RPC_OPERATION_DELIVER       RpcOperation = 5
+	RpcOperation_RPC_OPERATION_UNSPECIFIED      RpcOperation = 0
+	RpcOperation_RPC_OPERATION_REGISTER_NODE    RpcOperation = 1
+	RpcOperation_RPC_OPERATION_REGISTER         RpcOperation = 2
+	RpcOperation_RPC_OPERATION_UNREGISTER       RpcOperation = 3
+	RpcOperation_RPC_OPERATION_LOOKUP           RpcOperation = 4
+	RpcOperation_RPC_OPERATION_DELIVER          RpcOperation = 5
+	RpcOperation_RPC_OPERATION_ROUTE_INVALIDATE RpcOperation = 6
 )
 
 // Enum value maps for RpcOperation.
@@ -41,14 +42,16 @@ var (
 		3: "RPC_OPERATION_UNREGISTER",
 		4: "RPC_OPERATION_LOOKUP",
 		5: "RPC_OPERATION_DELIVER",
+		6: "RPC_OPERATION_ROUTE_INVALIDATE",
 	}
 	RpcOperation_value = map[string]int32{
-		"RPC_OPERATION_UNSPECIFIED":   0,
-		"RPC_OPERATION_REGISTER_NODE": 1,
-		"RPC_OPERATION_REGISTER":      2,
-		"RPC_OPERATION_UNREGISTER":    3,
-		"RPC_OPERATION_LOOKUP":        4,
-		"RPC_OPERATION_DELIVER":       5,
+		"RPC_OPERATION_UNSPECIFIED":      0,
+		"RPC_OPERATION_REGISTER_NODE":    1,
+		"RPC_OPERATION_REGISTER":         2,
+		"RPC_OPERATION_UNREGISTER":       3,
+		"RPC_OPERATION_LOOKUP":           4,
+		"RPC_OPERATION_DELIVER":          5,
+		"RPC_OPERATION_ROUTE_INVALIDATE": 6,
 	}
 )
 
@@ -647,6 +650,50 @@ func (x *LookupResponse) GetLocation() *ServiceLocation {
 	return nil
 }
 
+type RouteInvalidate struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Target        *ServiceKey            `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RouteInvalidate) Reset() {
+	*x = RouteInvalidate{}
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RouteInvalidate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RouteInvalidate) ProtoMessage() {}
+
+func (x *RouteInvalidate) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RouteInvalidate.ProtoReflect.Descriptor instead.
+func (*RouteInvalidate) Descriptor() ([]byte, []int) {
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *RouteInvalidate) GetTarget() *ServiceKey {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
 type DeliverRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Source        *ServiceKey            `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
@@ -659,7 +706,7 @@ type DeliverRequest struct {
 
 func (x *DeliverRequest) Reset() {
 	*x = DeliverRequest{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[12]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -671,7 +718,7 @@ func (x *DeliverRequest) String() string {
 func (*DeliverRequest) ProtoMessage() {}
 
 func (x *DeliverRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[12]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -684,7 +731,7 @@ func (x *DeliverRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverRequest.ProtoReflect.Descriptor instead.
 func (*DeliverRequest) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{12}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *DeliverRequest) GetSource() *ServiceKey {
@@ -724,7 +771,7 @@ type DeliverResponse struct {
 
 func (x *DeliverResponse) Reset() {
 	*x = DeliverResponse{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[13]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -736,7 +783,7 @@ func (x *DeliverResponse) String() string {
 func (*DeliverResponse) ProtoMessage() {}
 
 func (x *DeliverResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[13]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -749,7 +796,7 @@ func (x *DeliverResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverResponse.ProtoReflect.Descriptor instead.
 func (*DeliverResponse) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{13}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *DeliverResponse) GetPayload() []byte {
@@ -795,7 +842,9 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"\rLookupRequest\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\"N\n" +
 	"\x0eLookupResponse\x12<\n" +
-	"\blocation\x18\x01 \x01(\v2 .xtframework.rpc.ServiceLocationR\blocation\"\xb3\x01\n" +
+	"\blocation\x18\x01 \x01(\v2 .xtframework.rpc.ServiceLocationR\blocation\"F\n" +
+	"\x0fRouteInvalidate\x123\n" +
+	"\x06target\x18\x01 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\"\xb3\x01\n" +
 	"\x0eDeliverRequest\x123\n" +
 	"\x06source\x18\x01 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06source\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\x12\x1d\n" +
@@ -803,14 +852,15 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"message_id\x18\x03 \x01(\rR\tmessageId\x12\x18\n" +
 	"\apayload\x18\x04 \x01(\fR\apayload\"+\n" +
 	"\x0fDeliverResponse\x12\x18\n" +
-	"\apayload\x18\x01 \x01(\fR\apayload*\xbd\x01\n" +
+	"\apayload\x18\x01 \x01(\fR\apayload*\xe1\x01\n" +
 	"\fRpcOperation\x12\x1d\n" +
 	"\x19RPC_OPERATION_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bRPC_OPERATION_REGISTER_NODE\x10\x01\x12\x1a\n" +
 	"\x16RPC_OPERATION_REGISTER\x10\x02\x12\x1c\n" +
 	"\x18RPC_OPERATION_UNREGISTER\x10\x03\x12\x18\n" +
 	"\x14RPC_OPERATION_LOOKUP\x10\x04\x12\x19\n" +
-	"\x15RPC_OPERATION_DELIVER\x10\x05B\x1cZ\x1axtframework/internal/rpcpbb\x06proto3"
+	"\x15RPC_OPERATION_DELIVER\x10\x05\x12\"\n" +
+	"\x1eRPC_OPERATION_ROUTE_INVALIDATE\x10\x06B\x1cZ\x1axtframework/internal/rpcpbb\x06proto3"
 
 var (
 	file_internal_rpcpb_rpc_proto_rawDescOnce sync.Once
@@ -825,7 +875,7 @@ func file_internal_rpcpb_rpc_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_rpcpb_rpc_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_rpcpb_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_internal_rpcpb_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_internal_rpcpb_rpc_proto_goTypes = []any{
 	(RpcOperation)(0),            // 0: xtframework.rpc.RpcOperation
 	(*RpcEnvelope)(nil),          // 1: xtframework.rpc.RpcEnvelope
@@ -840,8 +890,9 @@ var file_internal_rpcpb_rpc_proto_goTypes = []any{
 	(*UnregisterResponse)(nil),   // 10: xtframework.rpc.UnregisterResponse
 	(*LookupRequest)(nil),        // 11: xtframework.rpc.LookupRequest
 	(*LookupResponse)(nil),       // 12: xtframework.rpc.LookupResponse
-	(*DeliverRequest)(nil),       // 13: xtframework.rpc.DeliverRequest
-	(*DeliverResponse)(nil),      // 14: xtframework.rpc.DeliverResponse
+	(*RouteInvalidate)(nil),      // 13: xtframework.rpc.RouteInvalidate
+	(*DeliverRequest)(nil),       // 14: xtframework.rpc.DeliverRequest
+	(*DeliverResponse)(nil),      // 15: xtframework.rpc.DeliverResponse
 }
 var file_internal_rpcpb_rpc_proto_depIdxs = []int32{
 	0, // 0: xtframework.rpc.RpcEnvelope.operation:type_name -> xtframework.rpc.RpcOperation
@@ -849,13 +900,14 @@ var file_internal_rpcpb_rpc_proto_depIdxs = []int32{
 	3, // 2: xtframework.rpc.UnregisterRequest.target:type_name -> xtframework.rpc.ServiceKey
 	3, // 3: xtframework.rpc.LookupRequest.target:type_name -> xtframework.rpc.ServiceKey
 	4, // 4: xtframework.rpc.LookupResponse.location:type_name -> xtframework.rpc.ServiceLocation
-	3, // 5: xtframework.rpc.DeliverRequest.source:type_name -> xtframework.rpc.ServiceKey
-	3, // 6: xtframework.rpc.DeliverRequest.target:type_name -> xtframework.rpc.ServiceKey
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	3, // 5: xtframework.rpc.RouteInvalidate.target:type_name -> xtframework.rpc.ServiceKey
+	3, // 6: xtframework.rpc.DeliverRequest.source:type_name -> xtframework.rpc.ServiceKey
+	3, // 7: xtframework.rpc.DeliverRequest.target:type_name -> xtframework.rpc.ServiceKey
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_internal_rpcpb_rpc_proto_init() }
@@ -869,7 +921,7 @@ func file_internal_rpcpb_rpc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_rpcpb_rpc_proto_rawDesc), len(file_internal_rpcpb_rpc_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   14,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
