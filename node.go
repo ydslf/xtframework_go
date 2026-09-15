@@ -129,7 +129,7 @@ type Node struct {
 
 	connectTimeout     time.Duration
 	serviceCallTimeout time.Duration
-	clientsMu          sync.Mutex
+	clientsMu          sync.RWMutex
 	rpcClients         map[int]*RPCClient //所有node保存的连接远端node的RPCClient
 	routeCache         *serviceRouteCache //非主node保存的非本地service地址
 
@@ -302,8 +302,8 @@ func (n *Node) RegisteredServices() []ServiceLocation {
 
 // RPCClientCount 返回当前缓存的节点间 RPC 客户端数量。
 func (n *Node) RPCClientCount() int {
-	n.clientsMu.Lock()
-	defer n.clientsMu.Unlock()
+	n.clientsMu.RLock()
+	defer n.clientsMu.RUnlock()
 	return len(n.rpcClients)
 }
 
@@ -775,9 +775,17 @@ func (n *Node) getRPCClient(nodeID int, addr string) (*RPCClient, error) {
 	if nodeID == n.id {
 		return nil, fmt.Errorf("cannot create an rpc client to local node %d", nodeID)
 	}
+	n.clientsMu.RLock()
+	current := n.rpcClients[nodeID]
+	if current != nil && current.Connected() && current.Addr() == addr {
+		n.clientsMu.RUnlock()
+		return current, nil
+	}
+	n.clientsMu.RUnlock()
+
 	n.clientsMu.Lock()
 	defer n.clientsMu.Unlock()
-	if current := n.rpcClients[nodeID]; current != nil {
+	if current = n.rpcClients[nodeID]; current != nil {
 		if current.Connected() && current.Addr() == addr {
 			return current, nil
 		}
