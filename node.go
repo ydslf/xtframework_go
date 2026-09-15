@@ -29,17 +29,22 @@ const (
 	nodeStateStopped
 )
 
-const defaultRouteCacheTTL = 30 * time.Minute
+const (
+	defaultRouteCacheTTL      = 30 * time.Minute
+	defaultServiceCallTimeout = 3 * time.Second
+)
 
 var byteOrder binary.ByteOrder = binary.BigEndian
 
 type nodeOptions struct {
-	factories      *FactoryRegistry
-	registry       ServiceRegistry
-	logger         *xtlog.Logger
-	connectTimeout time.Duration
-	routeCacheTTL  time.Duration
-	errorHandler   func(error)
+	factories             *FactoryRegistry
+	registry              ServiceRegistry
+	logger                *xtlog.Logger
+	connectTimeout        time.Duration
+	routeCacheTTL         time.Duration
+	serviceCallTimeout    time.Duration
+	serviceCallTimeoutSet bool
+	errorHandler          func(error)
 }
 
 type NodeOption func(*nodeOptions)
@@ -60,6 +65,14 @@ func WithLogger(logger *xtlog.Logger) NodeOption {
 
 func WithConnectTimeout(timeout time.Duration) NodeOption {
 	return func(options *nodeOptions) { options.connectTimeout = timeout }
+}
+
+// WithServiceCallTimeout 设置业务 Service 调用的默认超时时长，并覆盖 YAML 中的配置。
+func WithServiceCallTimeout(timeout time.Duration) NodeOption {
+	return func(options *nodeOptions) {
+		options.serviceCallTimeout = timeout
+		options.serviceCallTimeoutSet = true
+	}
 }
 
 // WithRouteCacheTTL 设置非主节点的 Service 路由缓存有效期。设置为 0
@@ -114,10 +127,11 @@ type Node struct {
 	remoteNodes   map[xtnetNet.ISession]*RemoteNode //所有node保存的session对应的远端node
 	registry      ServiceRegistry                   //主node保存的所有service地址
 
-	connectTimeout time.Duration
-	clientsMu      sync.Mutex
-	rpcClients     map[int]*RPCClient //所有node保存的连接远端node的RPCClient
-	routeCache     *serviceRouteCache //非主node保存的非本地service地址
+	connectTimeout     time.Duration
+	serviceCallTimeout time.Duration
+	clientsMu          sync.Mutex
+	rpcClients         map[int]*RPCClient //所有node保存的连接远端node的RPCClient
+	routeCache         *serviceRouteCache //非主node保存的非本地service地址
 
 	shutdownMutex sync.Mutex
 }
@@ -132,10 +146,11 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	}
 
 	options := nodeOptions{
-		factories:      defaultFactories,
-		registry:       NewMemoryRegistry(),
-		connectTimeout: 5 * time.Second,
-		routeCacheTTL:  defaultRouteCacheTTL,
+		factories:          defaultFactories,
+		registry:           NewMemoryRegistry(),
+		connectTimeout:     5 * time.Second,
+		routeCacheTTL:      defaultRouteCacheTTL,
+		serviceCallTimeout: defaultServiceCallTimeout,
 	}
 	for _, apply := range optionList {
 		if apply != nil {
@@ -153,6 +168,12 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	}
 	if options.routeCacheTTL < 0 {
 		return nil, fmt.Errorf("route cache TTL must not be negative")
+	}
+	if options.serviceCallTimeoutSet && options.serviceCallTimeout <= 0 {
+		return nil, fmt.Errorf("service call timeout must be positive")
+	}
+	if !options.serviceCallTimeoutSet && nodeConfig.ServiceCallTimeout > 0 {
+		options.serviceCallTimeout = nodeConfig.ServiceCallTimeout
 	}
 	nativeLogger := options.logger
 	var ownedLogger *xtlog.Logger
@@ -187,20 +208,21 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		options.errorHandler = func(err error) { nodeLogger.LogError("xtframework: %v", err) }
 	}
 	node := &Node{
-		id:             nodeID,
-		mainNodeID:     config.MainNode,
-		registry:       options.registry,
-		logger:         nodeLogger,
-		ownedLogger:    ownedLogger,
-		rpcClients:     make(map[int]*RPCClient),
-		config:         config,
-		nodeConfig:     nodeConfig,
-		factories:      options.factories,
-		connectTimeout: options.connectTimeout,
-		routeCache:     newServiceRouteCache(options.routeCacheTTL),
-		errorHandler:   options.errorHandler,
-		localServices:  make(map[ServiceKey]*serviceRuntime),
-		remoteNodes:    make(map[xtnetNet.ISession]*RemoteNode),
+		id:                 nodeID,
+		mainNodeID:         config.MainNode,
+		registry:           options.registry,
+		logger:             nodeLogger,
+		ownedLogger:        ownedLogger,
+		rpcClients:         make(map[int]*RPCClient),
+		config:             config,
+		nodeConfig:         nodeConfig,
+		factories:          options.factories,
+		connectTimeout:     options.connectTimeout,
+		serviceCallTimeout: options.serviceCallTimeout,
+		routeCache:         newServiceRouteCache(options.routeCacheTTL),
+		errorHandler:       options.errorHandler,
+		localServices:      make(map[ServiceKey]*serviceRuntime),
+		remoteNodes:        make(map[xtnetNet.ISession]*RemoteNode),
 	}
 	node.state.Store(nodeStateInitial)
 
@@ -472,12 +494,12 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 
 // CallService 异步调用一个 Service。返回 nil 表示请求已被接受，callback 将在独立
 // goroutine 中执行且只执行一次。返回非 nil 错误时不会调用 callback。
-// expireMS 只约束远端 RPC，本地 Service 调用不计算超时。
-func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
+// Node 配置的 Service 调用超时只约束远端 RPC，本地 Service 调用不计算超时。
+func (n *Node) CallService(serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
 	}
-	return n.callService(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload, func(responsePayload []byte, responseErr error) {
+	return n.callService(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload, func(responsePayload []byte, responseErr error) {
 		go func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
@@ -489,12 +511,9 @@ func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID
 	})
 }
 
-func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, messageID uint32, payload []byte, callback ServiceCallCallback) error {
+func (n *Node) callService(source, target ServiceKey, messageID uint32, payload []byte, callback ServiceCallCallback) error {
 	if !n.operational() {
 		return ErrNodeStopped
-	}
-	if expireMS <= 0 {
-		return fmt.Errorf("call service expiration must be positive")
 	}
 	if messageID == 0 {
 		return ErrInvalidMessage
@@ -519,7 +538,7 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 		return err
 	}
 	responseProtocol := &rpcpb.DeliverResponse{}
-	err = client.requestAsync(expireMS, opDeliver, &rpcpb.DeliverRequest{
+	err = client.requestAsync(n.serviceCallTimeout, opDeliver, &rpcpb.DeliverRequest{
 		Source:    serviceKeyToProto(source),
 		Target:    serviceKeyToProto(target),
 		MessageId: messageID,
@@ -544,16 +563,13 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 }
 
 // CallServiceSync 同步调用一个 Service，并阻塞等待调用结果或超时。
-func (n *Node) CallServiceSync(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
-	return n.callServiceSync(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
+func (n *Node) CallServiceSync(serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
+	return n.callServiceSync(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
 }
 
-func (n *Node) callServiceSync(expireMS time.Duration, source, target ServiceKey, messageID uint32, payload []byte) ([]byte, error) {
+func (n *Node) callServiceSync(source, target ServiceKey, messageID uint32, payload []byte) ([]byte, error) {
 	if !n.operational() {
 		return nil, ErrNodeStopped
-	}
-	if expireMS <= 0 {
-		return nil, fmt.Errorf("call service expiration must be positive")
 	}
 	if messageID == 0 {
 		return nil, ErrInvalidMessage
@@ -571,13 +587,13 @@ func (n *Node) callServiceSync(expireMS time.Duration, source, target ServiceKey
 		if err != nil {
 			return nil, err
 		}
-		timer := time.NewTimer(expireMS)
+		timer := time.NewTimer(n.serviceCallTimeout)
 		defer timer.Stop()
 		select {
 		case response := <-responses:
 			return response.payload, response.err
 		case <-timer.C:
-			return nil, fmt.Errorf("call service %s: timeout after %s", target, expireMS)
+			return nil, fmt.Errorf("call service %s: timeout after %s", target, n.serviceCallTimeout)
 		}
 	}
 
@@ -591,7 +607,7 @@ func (n *Node) callServiceSync(expireMS time.Duration, source, target ServiceKey
 		return nil, err
 	}
 	responseProtocol := &rpcpb.DeliverResponse{}
-	err = client.requestSync(expireMS, opDeliver, &rpcpb.DeliverRequest{
+	err = client.requestSync(n.serviceCallTimeout, opDeliver, &rpcpb.DeliverRequest{
 		Source:    serviceKeyToProto(source),
 		Target:    serviceKeyToProto(target),
 		MessageId: messageID,

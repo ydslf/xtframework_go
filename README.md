@@ -21,6 +21,7 @@ main_node: 1
 nodes:
   - id: 1
     listen_addr: "127.0.0.1:7001"
+    service_call_timeout: 3s
     logger:
       dir: "./logs/node_1"
       level: "debug"
@@ -33,6 +34,7 @@ nodes:
 
   - id: 2
     listen_addr: "127.0.0.1:7002"
+    service_call_timeout: 3s
     logger:
       dir: "./logs/node_2"
       level: "debug"

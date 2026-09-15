@@ -31,14 +31,14 @@ if err == nil {
 
 ```go
 err := service.CallService(
-    2*time.Second, "center", 1, 1001, requestPayload,
+	"center", 1, 1001, requestPayload,
 	func(replyPayload []byte, err error) {
 		// 回调在调用方 Service 的 Loop 中执行。
 	},
 )
 ```
 
-目标 Service 在 `HandleRPCRequest` 中返回响应负载和错误；响应不携带消息号。处理器 panic 或返回的错误都会转换为调用错误。处理器返回后不得再修改或复用响应负载。`CallService` 不阻塞，回调会投递回调用方 Service 的 Loop；返回错误表示请求未发起，此时不会执行回调。为避免本地高频调用产生定时器开销，异步调用的 `expireMS` 只约束远端 RPC，本地 Service 调用不计算超时。`CallServiceSync` 的本地和远端调用都会等待结果或超时，不应在需要保持响应的 Service Loop 中使用。
+目标 Service 在 `HandleRPCRequest` 中返回响应负载和错误；响应不携带消息号。处理器 panic 或返回的错误都会转换为调用错误。处理器返回后不得再修改或复用响应负载。`CallService` 不阻塞，回调会投递回调用方 Service 的 Loop；返回错误表示请求未发起，此时不会执行回调。Service 调用超时通过 Node 的 `service_call_timeout` 配置，默认值为 `3s`，也可通过 `WithServiceCallTimeout` 覆盖 YAML。为避免本地高频调用产生定时器开销，异步本地调用不计算超时；`CallServiceSync` 的本地和远端调用都会等待结果或超时，不应在需要保持响应的 Service Loop 中使用。
 
 ## 应用层编解码
 

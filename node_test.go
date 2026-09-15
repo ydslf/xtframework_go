@@ -189,7 +189,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	waitMessage(t, room1.received, "remote")
 
-	response, err := mainNode.CallServiceSync(3*time.Second, "room", 1, testRequestID, []byte("call"))
+	response, err := mainNode.CallServiceSync("room", 1, testRequestID, []byte("call"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	waitMessage(t, room1.received, "call")
 
-	response, err = roomNode.CallServiceSync(3*time.Second, "room", 2, testRequestID, []byte("local-call"))
+	response, err = roomNode.CallServiceSync("room", 2, testRequestID, []byte("local-call"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,17 +206,17 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 		t.Fatalf("local response = %q", got)
 	}
 
-	if _, err := roomNode.CallServiceSync(3*time.Second, "room", 2, testRequestID+1, []byte("invalid")); err == nil || !strings.Contains(err.Error(), "unexpected message id") {
+	if _, err := roomNode.CallServiceSync("room", 2, testRequestID+1, []byte("invalid")); err == nil || !strings.Contains(err.Error(), "unexpected message id") {
 		t.Fatalf("local handler error = %v", err)
 	}
-	if _, err := mainNode.CallServiceSync(3*time.Second, "room", 1, testRequestID, []byte("panic")); err == nil || !strings.Contains(err.Error(), "request panic") {
+	if _, err := mainNode.CallServiceSync("room", 1, testRequestID, []byte("panic")); err == nil || !strings.Contains(err.Error(), "request panic") {
 		t.Fatalf("remote handler panic = %v", err)
 	}
 
-	if _, err := mainNode.CallServiceSync(3*time.Second, "missing", 1, testRequestID, []byte("missing")); !errors.Is(err, ErrServiceNotFound) {
+	if _, err := mainNode.CallServiceSync("missing", 1, testRequestID, []byte("missing")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("missing service error = %v", err)
 	}
-	if _, err := roomNode.CallServiceSync(3*time.Second, "missing", 1, testRequestID, []byte("missing-remote")); !errors.Is(err, ErrServiceNotFound) {
+	if _, err := roomNode.CallServiceSync("missing", 1, testRequestID, []byte("missing-remote")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("remote missing service error = %v", err)
 	}
 
@@ -268,7 +268,7 @@ func TestCallServiceAsync(t *testing.T) {
 		err     error
 	}
 	remoteResult := make(chan callResult, 1)
-	if err := mainNode.CallService(3*time.Second, "room", 1, testRequestID, []byte("async-remote"), func(payload []byte, err error) {
+	if err := mainNode.CallService("room", 1, testRequestID, []byte("async-remote"), func(payload []byte, err error) {
 		remoteResult <- callResult{payload: payload, err: err}
 	}); err != nil {
 		t.Fatal(err)
@@ -286,7 +286,7 @@ func TestCallServiceAsync(t *testing.T) {
 	accepted := make(chan error, 1)
 	selfResult := make(chan callResult, 1)
 	room.Loop().Post(func() {
-		accepted <- room.CallService(3*time.Second, "room", 1, testRequestID, []byte("async-self"), func(payload []byte, err error) {
+		accepted <- room.CallService("room", 1, testRequestID, []byte("async-self"), func(payload []byte, err error) {
 			selfResult <- callResult{payload: payload, err: err}
 		})
 	})
@@ -308,7 +308,7 @@ func TestCallServiceAsync(t *testing.T) {
 	}
 
 	localExpiryResult := make(chan callResult, 1)
-	if err := roomNode.CallService(10*time.Millisecond, "room", 1, testRequestID, []byte("slow"), func(payload []byte, err error) {
+	if err := roomNode.CallService("room", 1, testRequestID, []byte("slow"), func(payload []byte, err error) {
 		localExpiryResult <- callResult{payload: payload, err: err}
 	}); err != nil {
 		t.Fatal(err)
@@ -323,7 +323,7 @@ func TestCallServiceAsync(t *testing.T) {
 	}
 
 	missingResult := make(chan callResult, 1)
-	err = roomNode.CallService(time.Second, "missing", 1, testRequestID, nil, func(payload []byte, err error) {
+	err = roomNode.CallService("missing", 1, testRequestID, nil, func(payload []byte, err error) {
 		missingResult <- callResult{payload: payload, err: err}
 	})
 	if !errors.Is(err, ErrServiceNotFound) {
@@ -335,7 +335,7 @@ func TestCallServiceAsync(t *testing.T) {
 	default:
 	}
 
-	if err := mainNode.CallService(time.Second, "room", 1, testRequestID, nil, nil); err == nil {
+	if err := mainNode.CallService("room", 1, testRequestID, nil, nil); err == nil {
 		t.Fatal("CallService accepted a nil callback")
 	}
 }
@@ -345,6 +345,36 @@ func TestNewNodeRequiresFactory(t *testing.T) {
 	_, err := NewNode(cfg, 1, WithFactoryRegistry(NewFactoryRegistry()), WithLogger(newTestXTLogger(t)))
 	if !errors.Is(err, ErrFactoryNotFound) {
 		t.Fatalf("NewNode() error = %v", err)
+	}
+}
+
+func TestServiceCallTimeoutConfiguration(t *testing.T) {
+	cfg := &Config{
+		MainNode: 1,
+		Nodes: []NodeConfig{{
+			ID:                 1,
+			ListenAddr:         freeAddress(t),
+			ServiceCallTimeout: 2 * time.Second,
+		}},
+	}
+	node, err := NewNode(cfg, 1, WithLogger(newTestXTLogger(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.serviceCallTimeout != 2*time.Second {
+		t.Fatalf("service call timeout = %s, want 2s", node.serviceCallTimeout)
+	}
+
+	overridden, err := NewNode(cfg, 1, WithLogger(newTestXTLogger(t)), WithServiceCallTimeout(4*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overridden.serviceCallTimeout != 4*time.Second {
+		t.Fatalf("overridden service call timeout = %s, want 4s", overridden.serviceCallTimeout)
+	}
+
+	if _, err := NewNode(cfg, 1, WithLogger(newTestXTLogger(t)), WithServiceCallTimeout(0)); err == nil {
+		t.Fatal("NewNode accepted a non-positive Service call timeout override")
 	}
 }
 

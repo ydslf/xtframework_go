@@ -3,7 +3,6 @@ package xtframework
 import (
 	"fmt"
 	"sync"
-	"time"
 
 	"xtnet/frame"
 )
@@ -100,15 +99,15 @@ func (s *BaseService) Send2Service(serviceName string, serviceID int, messageID 
 
 // CallService 异步调用另一个 Service。返回 nil 表示请求已被接受；调用完成后，
 // callback 会被投递到当前 Service 的 Loop 中执行。返回非 nil 错误时不会调用 callback。
-// expireMS 只约束远端 RPC，本地 Service 调用不计算超时。
-func (s *BaseService) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
+// Node 配置的 Service 调用超时只约束远端 RPC，本地 Service 调用不计算超时。
+func (s *BaseService) CallService(serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
 	}
 	if s.node == nil {
 		return ErrNodeStopped
 	}
-	return s.node.callService(expireMS, ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload, func(responsePayload []byte, responseErr error) {
+	return s.node.callService(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload, func(responsePayload []byte, responseErr error) {
 		s.loop.Post(func() {
 			callback(responsePayload, responseErr)
 		})
@@ -117,11 +116,11 @@ func (s *BaseService) CallService(expireMS time.Duration, serviceName string, se
 
 // CallServiceSync 同步调用另一个 Service，并阻塞等待调用结果或超时。
 // 需要保持响应的 Service Loop 不应使用此方法。
-func (s *BaseService) CallServiceSync(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
+func (s *BaseService) CallServiceSync(serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
 	if s.node == nil {
 		return nil, ErrNodeStopped
 	}
-	return s.node.callServiceSync(expireMS, ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
+	return s.node.callServiceSync(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
 }
 
 type MessageContext struct {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 	xtlog "xtnet/log"
@@ -18,10 +19,11 @@ type Config struct {
 }
 
 type NodeConfig struct {
-	ID         int             `yaml:"id"`
-	ListenAddr string          `yaml:"listen_addr"`
-	Logger     *LoggerConfig   `yaml:"logger,omitempty"`
-	Services   []ServiceConfig `yaml:"services,omitempty"`
+	ID                 int             `yaml:"id"`
+	ListenAddr         string          `yaml:"listen_addr"`
+	ServiceCallTimeout time.Duration   `yaml:"service_call_timeout,omitempty"`
+	Logger             *LoggerConfig   `yaml:"logger,omitempty"`
+	Services           []ServiceConfig `yaml:"services,omitempty"`
 }
 
 // LoggerConfig describes the process-wide xtnet logger used by one Node.
@@ -91,6 +93,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("nodes[%d].listen_addr %q is also used by node %d", i, n.ListenAddr, owner)
 		}
 		addresses[n.ListenAddr] = n.ID
+		if n.ServiceCallTimeout < 0 {
+			return fmt.Errorf("nodes[%d].service_call_timeout must not be negative", i)
+		}
 
 		if n.Logger != nil {
 			logDir := strings.TrimSpace(n.Logger.Dir)
