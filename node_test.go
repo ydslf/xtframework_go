@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	testRequestID uint32 = 1
+	testRequestID       uint32 = 1
+	testStringRequestID        = "test.request"
 )
 
 type frameworkTestService struct {
@@ -46,6 +47,24 @@ func (s *frameworkTestService) HandleRPCRequest(ctx *MessageContext, messageID u
 		return nil, err
 	}
 	return []byte("reply:" + string(payload)), nil
+}
+
+func (s *frameworkTestService) HandleRPCDirectString(_ *MessageContext, messageID string, payload []byte) error {
+	if messageID != testStringRequestID {
+		return fmt.Errorf("unexpected string message id %q", messageID)
+	}
+	select {
+	case s.received <- string(payload):
+	default:
+	}
+	return nil
+}
+
+func (s *frameworkTestService) HandleRPCRequestString(ctx *MessageContext, messageID string, payload []byte) ([]byte, error) {
+	if err := s.HandleRPCDirectString(ctx, messageID, payload); err != nil {
+		return nil, err
+	}
+	return []byte("string-reply:" + string(payload)), nil
 }
 
 type serviceCollector struct {
@@ -188,6 +207,14 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitMessage(t, room1.received, "remote")
+	if err := roomNode.Send2ServiceString("room", 1, testStringRequestID, []byte("string-local")); err != nil {
+		t.Fatal(err)
+	}
+	waitMessage(t, room1.received, "string-local")
+	if err := mainNode.Send2ServiceString("room", 1, testStringRequestID, []byte("string-remote")); err != nil {
+		t.Fatal(err)
+	}
+	waitMessage(t, room1.received, "string-remote")
 
 	response, err := mainNode.CallServiceSync("room", 1, testRequestID, []byte("call"))
 	if err != nil {
@@ -197,6 +224,15 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 		t.Fatalf("response = %q", got)
 	}
 	waitMessage(t, room1.received, "call")
+
+	response, err = mainNode.CallServiceSyncString("room", 1, testStringRequestID, []byte("string-call"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(response); got != "string-reply:string-call" {
+		t.Fatalf("string response = %q", got)
+	}
+	waitMessage(t, room1.received, "string-call")
 
 	response, err = roomNode.CallServiceSync("room", 2, testRequestID, []byte("local-call"))
 	if err != nil {
@@ -218,6 +254,9 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	if _, err := roomNode.CallServiceSync("missing", 1, testRequestID, []byte("missing-remote")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("remote missing service error = %v", err)
+	}
+	if err := mainNode.Send2ServiceString("room", 1, "", nil); !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("empty string message id error = %v", err)
 	}
 
 	if err := roomNode.Stop(); err != nil {
@@ -282,6 +321,21 @@ func TestCallServiceAsync(t *testing.T) {
 		t.Fatal("timed out waiting for remote callback")
 	}
 
+	remoteStringResult := make(chan callResult, 1)
+	if err := mainNode.CallServiceString("room", 1, testStringRequestID, []byte("async-string-remote"), func(payload []byte, err error) {
+		remoteStringResult <- callResult{payload: payload, err: err}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-remoteStringResult:
+		if result.err != nil || string(result.payload) != "string-reply:async-string-remote" {
+			t.Fatalf("remote string result = %q, %v", result.payload, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for remote string callback")
+	}
+
 	room := collector.get(2, "room", 1)
 	accepted := make(chan error, 1)
 	selfResult := make(chan callResult, 1)
@@ -305,6 +359,29 @@ func TestCallServiceAsync(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for self-call callback")
+	}
+
+	selfStringResult := make(chan callResult, 1)
+	room.Loop().Post(func() {
+		accepted <- room.CallServiceString("room", 1, testStringRequestID, []byte("async-string-self"), func(payload []byte, err error) {
+			selfStringResult <- callResult{payload: payload, err: err}
+		})
+	})
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CallServiceString blocked its source Service Loop")
+	}
+	select {
+	case result := <-selfStringResult:
+		if result.err != nil || string(result.payload) != "string-reply:async-string-self" {
+			t.Fatalf("self string result = %q, %v", result.payload, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for string self-call callback")
 	}
 
 	localExpiryResult := make(chan callResult, 1)

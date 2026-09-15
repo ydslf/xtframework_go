@@ -2,6 +2,7 @@ package xtframework
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -120,6 +121,10 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 			message: &rpcpb.DeliverRequest{Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, MessageId: 42, Payload: []byte{1}},
 		},
 		{
+			name: "deliver-string", op: opDeliver,
+			message: &rpcpb.DeliverRequest{Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, StringMessageId: "player.join", Payload: []byte{1}},
+		},
+		{
 			name: "route-invalidate", op: opRouteInvalidate,
 			message: &rpcpb.RouteInvalidate{Target: &rpcpb.ServiceKey{Name: "room", Id: 1}},
 		},
@@ -160,13 +165,38 @@ func TestDecodeDeliverRequestValidatesMessageID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if messageID != 42 {
-		t.Fatalf("message id = %d, want 42", messageID)
+	if messageID.kind != serviceMessageIDNumeric || messageID.number != 42 {
+		t.Fatalf("message id = %+v, want numeric 42", messageID)
 	}
 
 	request.MessageId = 0
 	if _, _, _, err := decodeDeliverRequest(request); err == nil {
 		t.Fatal("deliver request with zero message id was accepted")
+	}
+
+	request.StringMessageId = "player.join"
+	_, _, messageID, err = decodeDeliverRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if messageID.kind != serviceMessageIDString || messageID.text != "player.join" {
+		t.Fatalf("message id = %+v, want string player.join", messageID)
+	}
+
+	request.MessageId = 42
+	if _, _, _, err := decodeDeliverRequest(request); err == nil {
+		t.Fatal("deliver request with both message id forms was accepted")
+	}
+
+	request.MessageId = 0
+	request.StringMessageId = strings.Repeat("x", maxStringMessageIDSize+1)
+	if _, _, _, err := decodeDeliverRequest(request); !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("oversized string message id error = %v", err)
+	}
+
+	request.StringMessageId = string([]byte{0xff})
+	if _, _, _, err := decodeDeliverRequest(request); !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("invalid UTF-8 message id error = %v", err)
 	}
 }
 

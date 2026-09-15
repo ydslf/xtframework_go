@@ -75,6 +75,19 @@ func (s *Echo) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint3
 }
 ```
 
+也可以使用字符串消息 ID。发送方调用 `Send2ServiceString`、`CallServiceString` 或 `CallServiceSyncString`；`Service` 接口包含对应的字符串处理方法，嵌入 `BaseService` 后可按需覆盖 `HandleRPCDirectString` 或 `HandleRPCRequestString`：
+
+```go
+func (s *Echo) HandleRPCRequestString(ctx *xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
+	if messageID != "echo.request" {
+		return nil, fmt.Errorf("unknown message id %q", messageID)
+	}
+	return json.Marshal(&Reply{Text: "ok"})
+}
+```
+
+字符串消息 ID 必须是非空的有效 UTF-8，且最长 256 字节；原有 `uint32` API 和处理接口保持兼容。
+
 在创建 Node 前注册 Service 工厂：
 
 ```go

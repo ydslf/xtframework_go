@@ -72,7 +72,8 @@ message DeliverRequest {
   ServiceKey source = 1;
   ServiceKey target = 2;
   uint32 message_id = 3;
-  bytes payload = 4;
+  string string_message_id = 4;
+  bytes payload = 5;
 }
 
 message DeliverResponse {

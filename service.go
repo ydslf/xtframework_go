@@ -3,6 +3,7 @@ package xtframework
 import (
 	"fmt"
 	"sync"
+	"unicode/utf8"
 
 	"xtnet/frame"
 )
@@ -20,6 +21,59 @@ type Service interface {
 	Stop() error
 	HandleRPCDirect(*MessageContext, uint32, []byte) error
 	HandleRPCRequest(*MessageContext, uint32, []byte) ([]byte, error)
+	HandleRPCDirectString(*MessageContext, string, []byte) error
+	HandleRPCRequestString(*MessageContext, string, []byte) ([]byte, error)
+}
+
+type serviceMessageIDKind uint8
+
+const (
+	serviceMessageIDNumeric serviceMessageIDKind = iota + 1
+	serviceMessageIDString
+	maxStringMessageIDSize = 256
+)
+
+type serviceMessageID struct {
+	kind   serviceMessageIDKind
+	number uint32
+	text   string
+}
+
+func numericServiceMessageID(value uint32) serviceMessageID {
+	return serviceMessageID{kind: serviceMessageIDNumeric, number: value}
+}
+
+func stringServiceMessageID(value string) serviceMessageID {
+	return serviceMessageID{kind: serviceMessageIDString, text: value}
+}
+
+func (id serviceMessageID) validate() error {
+	switch id.kind {
+	case serviceMessageIDNumeric:
+		if id.number == 0 {
+			return fmt.Errorf("%w: numeric message id is zero", ErrInvalidMessage)
+		}
+	case serviceMessageIDString:
+		if id.text == "" {
+			return fmt.Errorf("%w: string message id is empty", ErrInvalidMessage)
+		}
+		if len(id.text) > maxStringMessageIDSize {
+			return fmt.Errorf("%w: string message id is too long: %d bytes", ErrInvalidMessage, len(id.text))
+		}
+		if !utf8.ValidString(id.text) {
+			return fmt.Errorf("%w: string message id is not valid UTF-8", ErrInvalidMessage)
+		}
+	default:
+		return fmt.Errorf("%w: message id kind is invalid", ErrInvalidMessage)
+	}
+	return nil
+}
+
+func (id serviceMessageID) String() string {
+	if id.kind == serviceMessageIDString {
+		return fmt.Sprintf("%q", id.text)
+	}
+	return fmt.Sprintf("%d", id.number)
 }
 
 type FactoryRegistry struct {
@@ -88,13 +142,28 @@ func (s *BaseService) HandleRPCDirect(*MessageContext, uint32, []byte) error {
 func (s *BaseService) HandleRPCRequest(*MessageContext, uint32, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("service %s:%d does not handle requests", s.Name(), s.ID())
 }
+func (s *BaseService) HandleRPCDirectString(*MessageContext, string, []byte) error {
+	return fmt.Errorf("service %s:%d does not handle string messages", s.Name(), s.ID())
+}
+func (s *BaseService) HandleRPCRequestString(*MessageContext, string, []byte) ([]byte, error) {
+	return nil, fmt.Errorf("service %s:%d does not handle string requests", s.Name(), s.ID())
+}
 
 // Send2Service 异步发送一条业务消息。调用后，调用者不得再修改或复用 payload。
 func (s *BaseService) Send2Service(serviceName string, serviceID int, messageID uint32, payload []byte) error {
 	if s.node == nil {
 		return ErrNodeStopped
 	}
-	return s.node.send2Service(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
+	return s.node.send2Service(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload)
+}
+
+// Send2ServiceString 异步发送一条使用字符串消息 ID 的业务消息。
+// 调用后，调用者不得再修改或复用 payload。
+func (s *BaseService) Send2ServiceString(serviceName string, serviceID int, messageID string, payload []byte) error {
+	if s.node == nil {
+		return ErrNodeStopped
+	}
+	return s.node.send2Service(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload)
 }
 
 // CallService 异步调用另一个 Service。返回 nil 表示请求已被接受；调用完成后，
@@ -107,7 +176,23 @@ func (s *BaseService) CallService(serviceName string, serviceID int, messageID u
 	if s.node == nil {
 		return ErrNodeStopped
 	}
-	return s.node.callService(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload, func(responsePayload []byte, responseErr error) {
+	return s.node.callService(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
+		s.loop.Post(func() {
+			callback(responsePayload, responseErr)
+		})
+	})
+}
+
+// CallServiceString 异步调用另一个 Service，并使用字符串消息 ID。
+// callback 会被投递到当前 Service 的 Loop 中执行。
+func (s *BaseService) CallServiceString(serviceName string, serviceID int, messageID string, payload []byte, callback ServiceCallCallback) error {
+	if callback == nil {
+		return fmt.Errorf("service call callback is nil")
+	}
+	if s.node == nil {
+		return ErrNodeStopped
+	}
+	return s.node.callService(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
 		s.loop.Post(func() {
 			callback(responsePayload, responseErr)
 		})
@@ -120,7 +205,16 @@ func (s *BaseService) CallServiceSync(serviceName string, serviceID int, message
 	if s.node == nil {
 		return nil, ErrNodeStopped
 	}
-	return s.node.callServiceSync(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
+	return s.node.callServiceSync(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload)
+}
+
+// CallServiceSyncString 同步调用另一个 Service，并使用字符串消息 ID。
+// 需要保持响应的 Service Loop 不应使用此方法。
+func (s *BaseService) CallServiceSyncString(serviceName string, serviceID int, messageID string, payload []byte) ([]byte, error) {
+	if s.node == nil {
+		return nil, ErrNodeStopped
+	}
+	return s.node.callServiceSync(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload)
 }
 
 type MessageContext struct {

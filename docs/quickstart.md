@@ -14,9 +14,9 @@
 
 ## Service 与消息
 
-每个 Service 必须拥有不同的 `*frame.Loop`。推荐嵌入 `BaseService`，它已提供身份、Loop、配置以及 `Send2Service`、`CallService`、`CallServiceSync` 方法。
+每个 Service 必须拥有不同的 `*frame.Loop`。推荐嵌入 `BaseService`，它已提供身份、Loop、配置以及数字消息 ID 和字符串消息 ID 对应的发送、调用方法。
 
-框架只识别 `uint32` 业务消息号并传输 `[]byte` 负载。应用负责使用 Protobuf、JSON 或其他格式编码和解码；空负载是合法消息，消息号 `0` 保留为无效值。框架不会复制业务负载；调用 `Send2Service` 或 `Respond` 后，调用者不得再修改或复用传入的切片。
+框架支持 `uint32` 和字符串两种业务消息 ID，并传输 `[]byte` 负载。数字 ID 使用原有的 `Send2Service`、`CallService`、`CallServiceSync`；字符串 ID 使用对应的 `Send2ServiceString`、`CallServiceString`、`CallServiceSyncString`。数字 `0`、空字符串、无效 UTF-8 以及超过 256 字节的字符串 ID 均为无效消息。应用负责使用 Protobuf、JSON 或其他格式编码和解码；空负载是合法消息。框架不会复制业务负载；发送或响应后，调用者不得再修改或复用传入的切片。
 
 单向发送：
 
@@ -25,6 +25,12 @@ payload, err := proto.Marshal(&gamepb.PlayerEnter{PlayerId: 42})
 if err == nil {
     err = service.Send2Service("room", 1, 1001, payload)
 }
+```
+
+字符串消息 ID 的发送方式相同：
+
+```go
+err := service.Send2ServiceString("room", 1, "player.enter", payload)
 ```
 
 异步请求响应：
@@ -69,6 +75,30 @@ func (s *Room) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint3
 		return proto.Marshal(&gamepb.PlayerReply{/* ... */})
     default:
 		return nil, fmt.Errorf("unknown message id %d", messageID)
+	}
+}
+```
+
+`Service` 同时定义数字和字符串消息处理方法。嵌入 `BaseService` 后，字符串处理方法已有默认的“不处理”实现，只需按业务需要覆盖：
+
+```go
+func (s *Room) HandleRPCDirectString(ctx *xtframework.MessageContext, messageID string, payload []byte) error {
+	switch messageID {
+	case "player.enter":
+		// 解码并处理 payload
+		return nil
+	default:
+		return fmt.Errorf("unknown message id %q", messageID)
+	}
+}
+
+func (s *Room) HandleRPCRequestString(ctx *xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
+	switch messageID {
+	case "player.query":
+		// 解码请求并返回响应
+		return replyPayload, nil
+	default:
+		return nil, fmt.Errorf("unknown message id %q", messageID)
 	}
 }
 ```

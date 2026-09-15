@@ -457,15 +457,21 @@ func (n *Node) unregisterService(key ServiceKey) error {
 
 // Send2Service 异步发送一条业务消息。调用后，调用者不得再修改或复用 payload。
 func (n *Node) Send2Service(serviceName string, serviceID int, messageID uint32, payload []byte) error {
-	return n.send2Service(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
+	return n.send2Service(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload)
 }
 
-func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload []byte) error {
+// Send2ServiceString 异步发送一条使用字符串消息 ID 的业务消息。
+// 调用后，调用者不得再修改或复用 payload。
+func (n *Node) Send2ServiceString(serviceName string, serviceID int, messageID string, payload []byte) error {
+	return n.send2Service(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload)
+}
+
+func (n *Node) send2Service(source, target ServiceKey, messageID serviceMessageID, payload []byte) error {
 	if !n.operational() {
 		return ErrNodeStopped
 	}
-	if messageID == 0 {
-		return ErrInvalidMessage
+	if err := messageID.validate(); err != nil {
+		return err
 	}
 	if _, local := n.localServices[target]; local {
 		return n.dispatchLocalDirect(source, target, messageID, payload)
@@ -480,12 +486,7 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 		n.routeCache.invalidate(target)
 		return err
 	}
-	err = client.send(opDeliver, &rpcpb.DeliverRequest{
-		Source:    serviceKeyToProto(source),
-		Target:    serviceKeyToProto(target),
-		MessageId: messageID,
-		Payload:   payload,
-	})
+	err = client.send(opDeliver, newDeliverRequest(source, target, messageID, payload))
 	if err != nil {
 		n.routeCache.invalidate(target)
 	}
@@ -499,7 +500,7 @@ func (n *Node) CallService(serviceName string, serviceID int, messageID uint32, 
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
 	}
-	return n.callService(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload, func(responsePayload []byte, responseErr error) {
+	return n.callService(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
 		go func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
@@ -511,12 +512,29 @@ func (n *Node) CallService(serviceName string, serviceID int, messageID uint32, 
 	})
 }
 
-func (n *Node) callService(source, target ServiceKey, messageID uint32, payload []byte, callback ServiceCallCallback) error {
+// CallServiceString 异步调用一个 Service，并使用字符串消息 ID。
+func (n *Node) CallServiceString(serviceName string, serviceID int, messageID string, payload []byte, callback ServiceCallCallback) error {
+	if callback == nil {
+		return fmt.Errorf("service call callback is nil")
+	}
+	return n.callService(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
+		go func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					n.report(fmt.Errorf("service call callback panic: %v\n%s", recovered, debug.Stack()))
+				}
+			}()
+			callback(responsePayload, responseErr)
+		}()
+	})
+}
+
+func (n *Node) callService(source, target ServiceKey, messageID serviceMessageID, payload []byte, callback ServiceCallCallback) error {
 	if !n.operational() {
 		return ErrNodeStopped
 	}
-	if messageID == 0 {
-		return ErrInvalidMessage
+	if err := messageID.validate(); err != nil {
+		return err
 	}
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
@@ -538,12 +556,7 @@ func (n *Node) callService(source, target ServiceKey, messageID uint32, payload 
 		return err
 	}
 	responseProtocol := &rpcpb.DeliverResponse{}
-	err = client.requestAsync(n.serviceCallTimeout, opDeliver, &rpcpb.DeliverRequest{
-		Source:    serviceKeyToProto(source),
-		Target:    serviceKeyToProto(target),
-		MessageId: messageID,
-		Payload:   payload,
-	}, responseProtocol, func(requestErr error) {
+	err = client.requestAsync(n.serviceCallTimeout, opDeliver, newDeliverRequest(source, target, messageID, payload), responseProtocol, func(requestErr error) {
 		if requestErr != nil && (errors.Is(requestErr, ErrServiceNotFound) || errors.Is(requestErr, ErrRPCDisconnected)) {
 			n.routeCache.invalidate(target)
 		}
@@ -564,15 +577,20 @@ func (n *Node) callService(source, target ServiceKey, messageID uint32, payload 
 
 // CallServiceSync 同步调用一个 Service，并阻塞等待调用结果或超时。
 func (n *Node) CallServiceSync(serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
-	return n.callServiceSync(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
+	return n.callServiceSync(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload)
 }
 
-func (n *Node) callServiceSync(source, target ServiceKey, messageID uint32, payload []byte) ([]byte, error) {
+// CallServiceSyncString 同步调用一个 Service，并使用字符串消息 ID。
+func (n *Node) CallServiceSyncString(serviceName string, serviceID int, messageID string, payload []byte) ([]byte, error) {
+	return n.callServiceSync(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload)
+}
+
+func (n *Node) callServiceSync(source, target ServiceKey, messageID serviceMessageID, payload []byte) ([]byte, error) {
 	if !n.operational() {
 		return nil, ErrNodeStopped
 	}
-	if messageID == 0 {
-		return nil, ErrInvalidMessage
+	if err := messageID.validate(); err != nil {
+		return nil, err
 	}
 	if _, local := n.localServices[target]; local {
 		type localResponse struct {
@@ -607,12 +625,7 @@ func (n *Node) callServiceSync(source, target ServiceKey, messageID uint32, payl
 		return nil, err
 	}
 	responseProtocol := &rpcpb.DeliverResponse{}
-	err = client.requestSync(n.serviceCallTimeout, opDeliver, &rpcpb.DeliverRequest{
-		Source:    serviceKeyToProto(source),
-		Target:    serviceKeyToProto(target),
-		MessageId: messageID,
-		Payload:   payload,
-	}, responseProtocol)
+	err = client.requestSync(n.serviceCallTimeout, opDeliver, newDeliverRequest(source, target, messageID, payload), responseProtocol)
 	if err != nil {
 		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
 			n.routeCache.invalidate(target)
@@ -622,12 +635,39 @@ func (n *Node) callServiceSync(source, target ServiceKey, messageID uint32, payl
 	return responseProtocol.Payload, nil
 }
 
-func (n *Node) dispatchLocalDirect(source, target ServiceKey, messageID uint32, payload []byte) error {
+func newDeliverRequest(source, target ServiceKey, messageID serviceMessageID, payload []byte) *rpcpb.DeliverRequest {
+	request := &rpcpb.DeliverRequest{
+		Source:  serviceKeyToProto(source),
+		Target:  serviceKeyToProto(target),
+		Payload: payload,
+	}
+	if messageID.kind == serviceMessageIDString {
+		request.StringMessageId = messageID.text
+	} else {
+		request.MessageId = messageID.number
+	}
+	return request
+}
+
+func (n *Node) dispatchLocalDirect(source, target ServiceKey, messageID serviceMessageID, payload []byte) error {
 	runtime, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
 	}
 	service := runtime.service
+	var handle func(*MessageContext, []byte) error
+	switch messageID.kind {
+	case serviceMessageIDNumeric:
+		handle = func(ctx *MessageContext, payload []byte) error {
+			return service.HandleRPCDirect(ctx, messageID.number, payload)
+		}
+	case serviceMessageIDString:
+		handle = func(ctx *MessageContext, payload []byte) error {
+			return service.HandleRPCDirectString(ctx, messageID.text, payload)
+		}
+	default:
+		return fmt.Errorf("%w: message id kind is invalid", ErrInvalidMessage)
+	}
 	messageContext := &MessageContext{
 		source: source,
 		target: target,
@@ -639,8 +679,8 @@ func (n *Node) dispatchLocalDirect(source, target ServiceKey, messageID uint32, 
 				n.report(err)
 			}
 		}()
-		if err := service.HandleRPCDirect(messageContext, messageID, payload); err != nil {
-			n.report(fmt.Errorf("handle message %d in service %s: %w", messageID, target, err))
+		if err := handle(messageContext, payload); err != nil {
+			n.report(fmt.Errorf("handle message %s in service %s: %w", messageID, target, err))
 		}
 	})
 	return nil
@@ -648,12 +688,25 @@ func (n *Node) dispatchLocalDirect(source, target ServiceKey, messageID uint32, 
 
 type localResponder func([]byte, error) error
 
-func (n *Node) dispatchLocalRequest(source, target ServiceKey, messageID uint32, payload []byte, responder localResponder) error {
+func (n *Node) dispatchLocalRequest(source, target ServiceKey, messageID serviceMessageID, payload []byte, responder localResponder) error {
 	runtime, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
 	}
 	service := runtime.service
+	var handle func(*MessageContext, []byte) ([]byte, error)
+	switch messageID.kind {
+	case serviceMessageIDNumeric:
+		handle = func(ctx *MessageContext, payload []byte) ([]byte, error) {
+			return service.HandleRPCRequest(ctx, messageID.number, payload)
+		}
+	case serviceMessageIDString:
+		handle = func(ctx *MessageContext, payload []byte) ([]byte, error) {
+			return service.HandleRPCRequestString(ctx, messageID.text, payload)
+		}
+	default:
+		return fmt.Errorf("%w: message id kind is invalid", ErrInvalidMessage)
+	}
 	messageContext := &MessageContext{
 		source: source,
 		target: target,
@@ -667,10 +720,10 @@ func (n *Node) dispatchLocalRequest(source, target ServiceKey, messageID uint32,
 					responseErr = fmt.Errorf("service %s panic: %v\n%s", target, recovered, debug.Stack())
 				}
 			}()
-			responsePayload, responseErr = service.HandleRPCRequest(messageContext, messageID, payload)
+			responsePayload, responseErr = handle(messageContext, payload)
 		}()
 		if err := responder(responsePayload, responseErr); err != nil {
-			n.report(fmt.Errorf("respond to message %d from service %s: %w", messageID, target, err))
+			n.report(fmt.Errorf("respond to message %s from service %s: %w", messageID, target, err))
 		}
 	})
 	return nil
@@ -899,22 +952,31 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 	}
 }
 
-func decodeDeliverRequest(request *rpcpb.DeliverRequest) (ServiceKey, ServiceKey, uint32, error) {
+func decodeDeliverRequest(request *rpcpb.DeliverRequest) (ServiceKey, ServiceKey, serviceMessageID, error) {
 	source, err := serviceKeyFromProto(request.Source)
 	if err != nil {
-		return ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver source: %w", err)
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, fmt.Errorf("deliver source: %w", err)
 	}
 	if source != (ServiceKey{}) && (source.Name == "" || source.ID <= 0) {
-		return ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver source is invalid: %s", source)
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, fmt.Errorf("deliver source is invalid: %s", source)
 	}
 	target, err := requiredRPCServiceKey(request.Target, "deliver target")
 	if err != nil {
-		return ServiceKey{}, ServiceKey{}, 0, err
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, err
 	}
-	if request.MessageId == 0 {
-		return ServiceKey{}, ServiceKey{}, 0, fmt.Errorf("deliver message id is zero")
+	if request.MessageId != 0 && request.StringMessageId != "" {
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, fmt.Errorf("deliver contains both numeric and string message ids")
 	}
-	return source, target, request.MessageId, nil
+	var messageID serviceMessageID
+	if request.StringMessageId != "" {
+		messageID = stringServiceMessageID(request.StringMessageId)
+	} else {
+		messageID = numericServiceMessageID(request.MessageId)
+	}
+	if err := messageID.validate(); err != nil {
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, fmt.Errorf("deliver message id: %w", err)
+	}
+	return source, target, messageID, nil
 }
 
 func requiredRPCServiceKey(message *rpcpb.ServiceKey, name string) (ServiceKey, error) {

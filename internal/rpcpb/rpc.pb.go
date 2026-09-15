@@ -695,13 +695,14 @@ func (x *RouteInvalidate) GetTarget() *ServiceKey {
 }
 
 type DeliverRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Source        *ServiceKey            `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
-	Target        *ServiceKey            `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
-	MessageId     uint32                 `protobuf:"varint,3,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Source          *ServiceKey            `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	Target          *ServiceKey            `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	MessageId       uint32                 `protobuf:"varint,3,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	StringMessageId string                 `protobuf:"bytes,4,opt,name=string_message_id,json=stringMessageId,proto3" json:"string_message_id,omitempty"`
+	Payload         []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *DeliverRequest) Reset() {
@@ -753,6 +754,13 @@ func (x *DeliverRequest) GetMessageId() uint32 {
 		return x.MessageId
 	}
 	return 0
+}
+
+func (x *DeliverRequest) GetStringMessageId() string {
+	if x != nil {
+		return x.StringMessageId
+	}
+	return ""
 }
 
 func (x *DeliverRequest) GetPayload() []byte {
@@ -844,13 +852,14 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"\x0eLookupResponse\x12<\n" +
 	"\blocation\x18\x01 \x01(\v2 .xtframework.rpc.ServiceLocationR\blocation\"F\n" +
 	"\x0fRouteInvalidate\x123\n" +
-	"\x06target\x18\x01 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\"\xb3\x01\n" +
+	"\x06target\x18\x01 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\"\xdf\x01\n" +
 	"\x0eDeliverRequest\x123\n" +
 	"\x06source\x18\x01 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06source\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\x12\x1d\n" +
 	"\n" +
-	"message_id\x18\x03 \x01(\rR\tmessageId\x12\x18\n" +
-	"\apayload\x18\x04 \x01(\fR\apayload\"+\n" +
+	"message_id\x18\x03 \x01(\rR\tmessageId\x12*\n" +
+	"\x11string_message_id\x18\x04 \x01(\tR\x0fstringMessageId\x12\x18\n" +
+	"\apayload\x18\x05 \x01(\fR\apayload\"+\n" +
 	"\x0fDeliverResponse\x12\x18\n" +
 	"\apayload\x18\x01 \x01(\fR\apayload*\xe1\x01\n" +
 	"\fRpcOperation\x12\x1d\n" +
