@@ -105,7 +105,31 @@ func (c *RPCClient) send(op operation, message operationProtocol) error {
 	return nil
 }
 
-func (c *RPCClient) request(expireMS time.Duration, op operation, request, response operationProtocol) error {
+func (c *RPCClient) requestAsync(expireMS time.Duration, op operation, request, response operationProtocol, callback func(error)) error {
+	session := c.client.GetSession()
+	if !c.connected.Load() || session == nil {
+		return ErrRPCDisconnected
+	}
+	wpk, err := encodeEnvelope(op, request)
+	if err != nil {
+		return err
+	}
+
+	c.netRPC.RequestAsync(session, wpk, expireMS, func(rpk *packet.ReadPacket, requestErr error) {
+		if requestErr != nil {
+			callback(requestErr)
+			return
+		}
+		payload, err := decodeResult(rpk)
+		if err == nil {
+			err = decodeResultPayload(payload, response)
+		}
+		callback(err)
+	})
+	return nil
+}
+
+func (c *RPCClient) requestSync(expireMS time.Duration, op operation, request, response operationProtocol) error {
 	session := c.client.GetSession()
 	if !c.connected.Load() || session == nil {
 		return ErrRPCDisconnected

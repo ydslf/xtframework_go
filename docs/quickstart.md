@@ -14,7 +14,7 @@
 
 ## Service 与消息
 
-每个 Service 必须拥有不同的 `*frame.Loop`。推荐嵌入 `BaseService`，它已提供身份、Loop、配置以及 `Send2Service`、`CallService` 方法。
+每个 Service 必须拥有不同的 `*frame.Loop`。推荐嵌入 `BaseService`，它已提供身份、Loop、配置以及 `Send2Service`、`CallService`、`CallServiceSync` 方法。
 
 框架只识别 `uint32` 业务消息号并传输 `[]byte` 负载。应用负责使用 Protobuf、JSON 或其他格式编码和解码；空负载是合法消息，消息号 `0` 保留为无效值。框架不会复制业务负载；调用 `Send2Service` 或 `Respond` 后，调用者不得再修改或复用传入的切片。
 
@@ -27,15 +27,18 @@ if err == nil {
 }
 ```
 
-请求响应：
+异步请求响应：
 
 ```go
-replyPayload, err := service.CallService(
+err := service.CallService(
     2*time.Second, "center", 1, 1001, requestPayload,
+	func(replyPayload []byte, err error) {
+		// 回调在调用方 Service 的 Loop 中执行。
+	},
 )
 ```
 
-目标 Service 在 `HandleRPCRequest` 中返回响应负载和错误；响应不携带消息号。处理器 panic 或返回的错误都会转换为调用错误。处理器返回后不得再修改或复用响应负载。`CallService` 会等待结果，因此不要在延迟敏感的 Service Loop 中进行长超时同步等待。
+目标 Service 在 `HandleRPCRequest` 中返回响应负载和错误；响应不携带消息号。处理器 panic 或返回的错误都会转换为调用错误。处理器返回后不得再修改或复用响应负载。`CallService` 不阻塞，回调会投递回调用方 Service 的 Loop；返回错误表示请求未发起，此时不会执行回调。为避免本地高频调用产生定时器开销，异步调用的 `expireMS` 只约束远端 RPC，本地 Service 调用不计算超时。`CallServiceSync` 的本地和远端调用都会等待结果或超时，不应在需要保持响应的 Service Loop 中使用。
 
 ## 应用层编解码
 

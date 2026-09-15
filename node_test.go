@@ -39,6 +39,9 @@ func (s *frameworkTestService) HandleRPCRequest(ctx *MessageContext, messageID u
 	if string(payload) == "panic" {
 		panic("request panic")
 	}
+	if string(payload) == "slow" {
+		time.Sleep(100 * time.Millisecond)
+	}
 	if err := s.HandleRPCDirect(ctx, messageID, payload); err != nil {
 		return nil, err
 	}
@@ -186,7 +189,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	waitMessage(t, room1.received, "remote")
 
-	response, err := mainNode.CallService(3*time.Second, "room", 1, testRequestID, []byte("call"))
+	response, err := mainNode.CallServiceSync(3*time.Second, "room", 1, testRequestID, []byte("call"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +198,7 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	}
 	waitMessage(t, room1.received, "call")
 
-	response, err = roomNode.CallService(3*time.Second, "room", 2, testRequestID, []byte("local-call"))
+	response, err = roomNode.CallServiceSync(3*time.Second, "room", 2, testRequestID, []byte("local-call"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,17 +206,17 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 		t.Fatalf("local response = %q", got)
 	}
 
-	if _, err := roomNode.CallService(3*time.Second, "room", 2, testRequestID+1, []byte("invalid")); err == nil || !strings.Contains(err.Error(), "unexpected message id") {
+	if _, err := roomNode.CallServiceSync(3*time.Second, "room", 2, testRequestID+1, []byte("invalid")); err == nil || !strings.Contains(err.Error(), "unexpected message id") {
 		t.Fatalf("local handler error = %v", err)
 	}
-	if _, err := mainNode.CallService(3*time.Second, "room", 1, testRequestID, []byte("panic")); err == nil || !strings.Contains(err.Error(), "request panic") {
+	if _, err := mainNode.CallServiceSync(3*time.Second, "room", 1, testRequestID, []byte("panic")); err == nil || !strings.Contains(err.Error(), "request panic") {
 		t.Fatalf("remote handler panic = %v", err)
 	}
 
-	if _, err := mainNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing")); !errors.Is(err, ErrServiceNotFound) {
+	if _, err := mainNode.CallServiceSync(3*time.Second, "missing", 1, testRequestID, []byte("missing")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("missing service error = %v", err)
 	}
-	if _, err := roomNode.CallService(3*time.Second, "missing", 1, testRequestID, []byte("missing-remote")); !errors.Is(err, ErrServiceNotFound) {
+	if _, err := roomNode.CallServiceSync(3*time.Second, "missing", 1, testRequestID, []byte("missing-remote")); !errors.Is(err, ErrServiceNotFound) {
 		t.Fatalf("remote missing service error = %v", err)
 	}
 
@@ -224,6 +227,116 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	waitUntil(t, func() bool { return mainNode.RPCClientCount() == 0 }, "main node to release the stopped room node connection")
 	if _, found := mainNode.RegisteredService(ServiceKey{Name: "room", ID: 1}); found {
 		t.Fatal("room service remains registered after node stop")
+	}
+}
+
+func TestCallServiceAsync(t *testing.T) {
+	collector := &serviceCollector{services: make(map[string]*frameworkTestService)}
+	factories := NewFactoryRegistry()
+	for _, name := range []string{"center", "room"} {
+		if err := factories.Register(name, collector.factory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &Config{
+		MainNode: 1,
+		Nodes: []NodeConfig{
+			{ID: 1, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "center", ID: 1}}},
+			{ID: 2, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "room", ID: 1}}},
+		},
+	}
+	logger := newTestXTLogger(t)
+	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roomNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories), WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mainNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mainNode.Stop() })
+	if err := roomNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = roomNode.Stop() })
+
+	type callResult struct {
+		payload []byte
+		err     error
+	}
+	remoteResult := make(chan callResult, 1)
+	if err := mainNode.CallService(3*time.Second, "room", 1, testRequestID, []byte("async-remote"), func(payload []byte, err error) {
+		remoteResult <- callResult{payload: payload, err: err}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-remoteResult:
+		if result.err != nil || string(result.payload) != "reply:async-remote" {
+			t.Fatalf("remote result = %q, %v", result.payload, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for remote callback")
+	}
+
+	room := collector.get(2, "room", 1)
+	accepted := make(chan error, 1)
+	selfResult := make(chan callResult, 1)
+	room.Loop().Post(func() {
+		accepted <- room.CallService(3*time.Second, "room", 1, testRequestID, []byte("async-self"), func(payload []byte, err error) {
+			selfResult <- callResult{payload: payload, err: err}
+		})
+	})
+	select {
+	case err := <-accepted:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CallService blocked its source Service Loop")
+	}
+	select {
+	case result := <-selfResult:
+		if result.err != nil || string(result.payload) != "reply:async-self" {
+			t.Fatalf("self result = %q, %v", result.payload, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for self-call callback")
+	}
+
+	localExpiryResult := make(chan callResult, 1)
+	if err := roomNode.CallService(10*time.Millisecond, "room", 1, testRequestID, []byte("slow"), func(payload []byte, err error) {
+		localExpiryResult <- callResult{payload: payload, err: err}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-localExpiryResult:
+		if result.err != nil || string(result.payload) != "reply:slow" {
+			t.Fatalf("local result after expiration = %q, %v", result.payload, result.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for local callback")
+	}
+
+	missingResult := make(chan callResult, 1)
+	err = roomNode.CallService(time.Second, "missing", 1, testRequestID, nil, func(payload []byte, err error) {
+		missingResult <- callResult{payload: payload, err: err}
+	})
+	if !errors.Is(err, ErrServiceNotFound) {
+		t.Fatalf("missing Service error = %v", err)
+	}
+	select {
+	case result := <-missingResult:
+		t.Fatalf("missing Service unexpectedly called callback: %q, %v", result.payload, result.err)
+	default:
+	}
+
+	if err := mainNode.CallService(time.Second, "room", 1, testRequestID, nil, nil); err == nil {
+		t.Fatal("CallService accepted a nil callback")
 	}
 }
 
@@ -316,7 +429,7 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unregisteredClient.request(time.Second, opLookup, &rpcpb.LookupRequest{
+	if err := unregisteredClient.requestSync(time.Second, opLookup, &rpcpb.LookupRequest{
 		Target: &rpcpb.ServiceKey{Name: "center", Id: 1},
 	}, &rpcpb.LookupResponse{}); !errors.Is(err, ErrNodeNotFound) {
 		t.Fatalf("lookup from unregistered session error = %v, want ErrNodeNotFound", err)

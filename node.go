@@ -412,7 +412,7 @@ func (n *Node) registerService(key ServiceKey) error {
 	request := &rpcpb.RegisterRequest{
 		Location: serviceLocationToProto(location),
 	}
-	return client.request(n.connectTimeout, opRegister, request, &rpcpb.RegisterResponse{})
+	return client.requestSync(n.connectTimeout, opRegister, request, &rpcpb.RegisterResponse{})
 }
 
 func (n *Node) unregisterService(key ServiceKey) error {
@@ -430,7 +430,7 @@ func (n *Node) unregisterService(key ServiceKey) error {
 	request := &rpcpb.UnregisterRequest{
 		Target: serviceKeyToProto(key),
 	}
-	return client.request(n.connectTimeout, opUnregister, request, &rpcpb.UnregisterResponse{})
+	return client.requestSync(n.connectTimeout, opUnregister, request, &rpcpb.UnregisterResponse{})
 }
 
 // Send2Service 异步发送一条业务消息。调用后，调用者不得再修改或复用 payload。
@@ -470,11 +470,85 @@ func (n *Node) send2Service(source, target ServiceKey, messageID uint32, payload
 	return err
 }
 
-func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
-	return n.callService(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
+// CallService 异步调用一个 Service。返回 nil 表示请求已被接受，callback 将在独立
+// goroutine 中执行且只执行一次。返回非 nil 错误时不会调用 callback。
+// expireMS 只约束远端 RPC，本地 Service 调用不计算超时。
+func (n *Node) CallService(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
+	if callback == nil {
+		return fmt.Errorf("service call callback is nil")
+	}
+	return n.callService(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload, func(responsePayload []byte, responseErr error) {
+		go func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					n.report(fmt.Errorf("service call callback panic: %v\n%s", recovered, debug.Stack()))
+				}
+			}()
+			callback(responsePayload, responseErr)
+		}()
+	})
 }
 
-func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, messageID uint32, payload []byte) ([]byte, error) {
+func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, messageID uint32, payload []byte, callback ServiceCallCallback) error {
+	if !n.operational() {
+		return ErrNodeStopped
+	}
+	if expireMS <= 0 {
+		return fmt.Errorf("call service expiration must be positive")
+	}
+	if messageID == 0 {
+		return ErrInvalidMessage
+	}
+	if callback == nil {
+		return fmt.Errorf("service call callback is nil")
+	}
+	if _, local := n.localServices[target]; local {
+		return n.dispatchLocalRequest(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
+			callback(responsePayload, responseErr)
+			return nil
+		})
+	}
+
+	location, err := n.lookupService(target)
+	if err != nil {
+		return err
+	}
+	client, err := n.getRPCClient(location.NodeID, location.NodeAddr)
+	if err != nil {
+		n.routeCache.invalidate(target)
+		return err
+	}
+	responseProtocol := &rpcpb.DeliverResponse{}
+	err = client.requestAsync(expireMS, opDeliver, &rpcpb.DeliverRequest{
+		Source:    serviceKeyToProto(source),
+		Target:    serviceKeyToProto(target),
+		MessageId: messageID,
+		Payload:   payload,
+	}, responseProtocol, func(requestErr error) {
+		if requestErr != nil && (errors.Is(requestErr, ErrServiceNotFound) || errors.Is(requestErr, ErrRPCDisconnected)) {
+			n.routeCache.invalidate(target)
+		}
+		if requestErr != nil {
+			callback(nil, requestErr)
+			return
+		}
+		callback(responseProtocol.Payload, nil)
+	})
+	if err != nil {
+		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
+			n.routeCache.invalidate(target)
+		}
+		return err
+	}
+	return nil
+}
+
+// CallServiceSync 同步调用一个 Service，并阻塞等待调用结果或超时。
+func (n *Node) CallServiceSync(expireMS time.Duration, serviceName string, serviceID int, messageID uint32, payload []byte) ([]byte, error) {
+	return n.callServiceSync(expireMS, ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, messageID, payload)
+}
+
+func (n *Node) callServiceSync(expireMS time.Duration, source, target ServiceKey, messageID uint32, payload []byte) ([]byte, error) {
 	if !n.operational() {
 		return nil, ErrNodeStopped
 	}
@@ -517,7 +591,7 @@ func (n *Node) callService(expireMS time.Duration, source, target ServiceKey, me
 		return nil, err
 	}
 	responseProtocol := &rpcpb.DeliverResponse{}
-	err = client.request(expireMS, opDeliver, &rpcpb.DeliverRequest{
+	err = client.requestSync(expireMS, opDeliver, &rpcpb.DeliverRequest{
 		Source:    serviceKeyToProto(source),
 		Target:    serviceKeyToProto(target),
 		MessageId: messageID,
@@ -604,7 +678,7 @@ func (n *Node) lookupServiceFromMain(key ServiceKey) (ServiceLocation, error) {
 		return ServiceLocation{}, err
 	}
 	response := &rpcpb.LookupResponse{}
-	err = client.request(n.connectTimeout, opLookup, &rpcpb.LookupRequest{
+	err = client.requestSync(n.connectTimeout, opLookup, &rpcpb.LookupRequest{
 		Target: serviceKeyToProto(key),
 	}, response)
 	if err != nil {
@@ -645,7 +719,7 @@ func (n *Node) getRPCClient(nodeID int, addr string) (*RPCClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := client.request(n.connectTimeout, opRegisterNode, &rpcpb.RegisterNodeRequest{
+	if err := client.requestSync(n.connectTimeout, opRegisterNode, &rpcpb.RegisterNodeRequest{
 		NodeId:   int64(n.id),
 		NodeAddr: n.nodeConfig.ListenAddr,
 	}, &rpcpb.RegisterNodeResponse{}); err != nil {
