@@ -31,6 +31,7 @@ const (
 	RpcOperation_RPC_OPERATION_LOOKUP           RpcOperation = 4
 	RpcOperation_RPC_OPERATION_DELIVER          RpcOperation = 5
 	RpcOperation_RPC_OPERATION_ROUTE_INVALIDATE RpcOperation = 6
+	RpcOperation_RPC_OPERATION_HEARTBEAT        RpcOperation = 7
 )
 
 // Enum value maps for RpcOperation.
@@ -43,6 +44,7 @@ var (
 		4: "RPC_OPERATION_LOOKUP",
 		5: "RPC_OPERATION_DELIVER",
 		6: "RPC_OPERATION_ROUTE_INVALIDATE",
+		7: "RPC_OPERATION_HEARTBEAT",
 	}
 	RpcOperation_value = map[string]int32{
 		"RPC_OPERATION_UNSPECIFIED":      0,
@@ -52,6 +54,7 @@ var (
 		"RPC_OPERATION_LOOKUP":           4,
 		"RPC_OPERATION_DELIVER":          5,
 		"RPC_OPERATION_ROUTE_INVALIDATE": 6,
+		"RPC_OPERATION_HEARTBEAT":        7,
 	}
 )
 
@@ -402,6 +405,78 @@ func (*RegisterNodeResponse) Descriptor() ([]byte, []int) {
 	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{5}
 }
 
+type HeartbeatRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatRequest) Reset() {
+	*x = HeartbeatRequest{}
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatRequest) ProtoMessage() {}
+
+func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
+func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{6}
+}
+
+type HeartbeatResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatResponse) Reset() {
+	*x = HeartbeatResponse{}
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatResponse) ProtoMessage() {}
+
+func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
+func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{7}
+}
+
 type RegisterRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Location      *ServiceLocation       `protobuf:"bytes,1,opt,name=location,proto3" json:"location,omitempty"`
@@ -411,7 +486,7 @@ type RegisterRequest struct {
 
 func (x *RegisterRequest) Reset() {
 	*x = RegisterRequest{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[6]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -423,7 +498,7 @@ func (x *RegisterRequest) String() string {
 func (*RegisterRequest) ProtoMessage() {}
 
 func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[6]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -436,7 +511,7 @@ func (x *RegisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterRequest.ProtoReflect.Descriptor instead.
 func (*RegisterRequest) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{6}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *RegisterRequest) GetLocation() *ServiceLocation {
@@ -454,7 +529,7 @@ type RegisterResponse struct {
 
 func (x *RegisterResponse) Reset() {
 	*x = RegisterResponse{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[7]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -466,7 +541,7 @@ func (x *RegisterResponse) String() string {
 func (*RegisterResponse) ProtoMessage() {}
 
 func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[7]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -479,7 +554,7 @@ func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterResponse.ProtoReflect.Descriptor instead.
 func (*RegisterResponse) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{7}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{9}
 }
 
 type UnregisterRequest struct {
@@ -491,7 +566,7 @@ type UnregisterRequest struct {
 
 func (x *UnregisterRequest) Reset() {
 	*x = UnregisterRequest{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[8]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -503,7 +578,7 @@ func (x *UnregisterRequest) String() string {
 func (*UnregisterRequest) ProtoMessage() {}
 
 func (x *UnregisterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[8]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -516,7 +591,7 @@ func (x *UnregisterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnregisterRequest.ProtoReflect.Descriptor instead.
 func (*UnregisterRequest) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{8}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *UnregisterRequest) GetTarget() *ServiceKey {
@@ -534,7 +609,7 @@ type UnregisterResponse struct {
 
 func (x *UnregisterResponse) Reset() {
 	*x = UnregisterResponse{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[9]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -546,7 +621,7 @@ func (x *UnregisterResponse) String() string {
 func (*UnregisterResponse) ProtoMessage() {}
 
 func (x *UnregisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[9]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -559,7 +634,7 @@ func (x *UnregisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnregisterResponse.ProtoReflect.Descriptor instead.
 func (*UnregisterResponse) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{9}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{11}
 }
 
 type LookupRequest struct {
@@ -571,7 +646,7 @@ type LookupRequest struct {
 
 func (x *LookupRequest) Reset() {
 	*x = LookupRequest{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[10]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -583,7 +658,7 @@ func (x *LookupRequest) String() string {
 func (*LookupRequest) ProtoMessage() {}
 
 func (x *LookupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[10]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -596,7 +671,7 @@ func (x *LookupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LookupRequest.ProtoReflect.Descriptor instead.
 func (*LookupRequest) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{10}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *LookupRequest) GetTarget() *ServiceKey {
@@ -615,7 +690,7 @@ type LookupResponse struct {
 
 func (x *LookupResponse) Reset() {
 	*x = LookupResponse{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[11]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -627,7 +702,7 @@ func (x *LookupResponse) String() string {
 func (*LookupResponse) ProtoMessage() {}
 
 func (x *LookupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[11]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -640,7 +715,7 @@ func (x *LookupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LookupResponse.ProtoReflect.Descriptor instead.
 func (*LookupResponse) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{11}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *LookupResponse) GetLocation() *ServiceLocation {
@@ -659,7 +734,7 @@ type RouteInvalidate struct {
 
 func (x *RouteInvalidate) Reset() {
 	*x = RouteInvalidate{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[12]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -671,7 +746,7 @@ func (x *RouteInvalidate) String() string {
 func (*RouteInvalidate) ProtoMessage() {}
 
 func (x *RouteInvalidate) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[12]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -684,7 +759,7 @@ func (x *RouteInvalidate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RouteInvalidate.ProtoReflect.Descriptor instead.
 func (*RouteInvalidate) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{12}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RouteInvalidate) GetTarget() *ServiceKey {
@@ -707,7 +782,7 @@ type DeliverRequest struct {
 
 func (x *DeliverRequest) Reset() {
 	*x = DeliverRequest{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[13]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -719,7 +794,7 @@ func (x *DeliverRequest) String() string {
 func (*DeliverRequest) ProtoMessage() {}
 
 func (x *DeliverRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[13]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -732,7 +807,7 @@ func (x *DeliverRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverRequest.ProtoReflect.Descriptor instead.
 func (*DeliverRequest) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{13}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *DeliverRequest) GetSource() *ServiceKey {
@@ -779,7 +854,7 @@ type DeliverResponse struct {
 
 func (x *DeliverResponse) Reset() {
 	*x = DeliverResponse{}
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[14]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -791,7 +866,7 @@ func (x *DeliverResponse) String() string {
 func (*DeliverResponse) ProtoMessage() {}
 
 func (x *DeliverResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_rpcpb_rpc_proto_msgTypes[14]
+	mi := &file_internal_rpcpb_rpc_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -804,7 +879,7 @@ func (x *DeliverResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverResponse.ProtoReflect.Descriptor instead.
 func (*DeliverResponse) Descriptor() ([]byte, []int) {
-	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{14}
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *DeliverResponse) GetPayload() []byte {
@@ -840,7 +915,9 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"\x13RegisterNodeRequest\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\x03R\x06nodeId\x12\x1b\n" +
 	"\tnode_addr\x18\x02 \x01(\tR\bnodeAddr\"\x16\n" +
-	"\x14RegisterNodeResponse\"O\n" +
+	"\x14RegisterNodeResponse\"\x12\n" +
+	"\x10HeartbeatRequest\"\x13\n" +
+	"\x11HeartbeatResponse\"O\n" +
 	"\x0fRegisterRequest\x12<\n" +
 	"\blocation\x18\x01 \x01(\v2 .xtframework.rpc.ServiceLocationR\blocation\"\x12\n" +
 	"\x10RegisterResponse\"H\n" +
@@ -861,7 +938,7 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"\x11string_message_id\x18\x04 \x01(\tR\x0fstringMessageId\x12\x18\n" +
 	"\apayload\x18\x05 \x01(\fR\apayload\"+\n" +
 	"\x0fDeliverResponse\x12\x18\n" +
-	"\apayload\x18\x01 \x01(\fR\apayload*\xe1\x01\n" +
+	"\apayload\x18\x01 \x01(\fR\apayload*\xfe\x01\n" +
 	"\fRpcOperation\x12\x1d\n" +
 	"\x19RPC_OPERATION_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bRPC_OPERATION_REGISTER_NODE\x10\x01\x12\x1a\n" +
@@ -869,7 +946,8 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"\x18RPC_OPERATION_UNREGISTER\x10\x03\x12\x18\n" +
 	"\x14RPC_OPERATION_LOOKUP\x10\x04\x12\x19\n" +
 	"\x15RPC_OPERATION_DELIVER\x10\x05\x12\"\n" +
-	"\x1eRPC_OPERATION_ROUTE_INVALIDATE\x10\x06B\x1cZ\x1axtframework/internal/rpcpbb\x06proto3"
+	"\x1eRPC_OPERATION_ROUTE_INVALIDATE\x10\x06\x12\x1b\n" +
+	"\x17RPC_OPERATION_HEARTBEAT\x10\aB\x1cZ\x1axtframework/internal/rpcpbb\x06proto3"
 
 var (
 	file_internal_rpcpb_rpc_proto_rawDescOnce sync.Once
@@ -884,7 +962,7 @@ func file_internal_rpcpb_rpc_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_rpcpb_rpc_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_rpcpb_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_internal_rpcpb_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_internal_rpcpb_rpc_proto_goTypes = []any{
 	(RpcOperation)(0),            // 0: xtframework.rpc.RpcOperation
 	(*RpcEnvelope)(nil),          // 1: xtframework.rpc.RpcEnvelope
@@ -893,15 +971,17 @@ var file_internal_rpcpb_rpc_proto_goTypes = []any{
 	(*ServiceLocation)(nil),      // 4: xtframework.rpc.ServiceLocation
 	(*RegisterNodeRequest)(nil),  // 5: xtframework.rpc.RegisterNodeRequest
 	(*RegisterNodeResponse)(nil), // 6: xtframework.rpc.RegisterNodeResponse
-	(*RegisterRequest)(nil),      // 7: xtframework.rpc.RegisterRequest
-	(*RegisterResponse)(nil),     // 8: xtframework.rpc.RegisterResponse
-	(*UnregisterRequest)(nil),    // 9: xtframework.rpc.UnregisterRequest
-	(*UnregisterResponse)(nil),   // 10: xtframework.rpc.UnregisterResponse
-	(*LookupRequest)(nil),        // 11: xtframework.rpc.LookupRequest
-	(*LookupResponse)(nil),       // 12: xtframework.rpc.LookupResponse
-	(*RouteInvalidate)(nil),      // 13: xtframework.rpc.RouteInvalidate
-	(*DeliverRequest)(nil),       // 14: xtframework.rpc.DeliverRequest
-	(*DeliverResponse)(nil),      // 15: xtframework.rpc.DeliverResponse
+	(*HeartbeatRequest)(nil),     // 7: xtframework.rpc.HeartbeatRequest
+	(*HeartbeatResponse)(nil),    // 8: xtframework.rpc.HeartbeatResponse
+	(*RegisterRequest)(nil),      // 9: xtframework.rpc.RegisterRequest
+	(*RegisterResponse)(nil),     // 10: xtframework.rpc.RegisterResponse
+	(*UnregisterRequest)(nil),    // 11: xtframework.rpc.UnregisterRequest
+	(*UnregisterResponse)(nil),   // 12: xtframework.rpc.UnregisterResponse
+	(*LookupRequest)(nil),        // 13: xtframework.rpc.LookupRequest
+	(*LookupResponse)(nil),       // 14: xtframework.rpc.LookupResponse
+	(*RouteInvalidate)(nil),      // 15: xtframework.rpc.RouteInvalidate
+	(*DeliverRequest)(nil),       // 16: xtframework.rpc.DeliverRequest
+	(*DeliverResponse)(nil),      // 17: xtframework.rpc.DeliverResponse
 }
 var file_internal_rpcpb_rpc_proto_depIdxs = []int32{
 	0, // 0: xtframework.rpc.RpcEnvelope.operation:type_name -> xtframework.rpc.RpcOperation
@@ -930,7 +1010,7 @@ func file_internal_rpcpb_rpc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_rpcpb_rpc_proto_rawDesc), len(file_internal_rpcpb_rpc_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

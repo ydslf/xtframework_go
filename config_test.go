@@ -82,3 +82,25 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("service call timeout = %s, want 3s", cfg.Nodes[0].ServiceCallTimeout)
 	}
 }
+
+func TestNewNodeRejectsInvalidHeartbeat(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+		timeout  time.Duration
+		want     string
+	}{
+		{name: "zero interval", timeout: time.Second, want: "interval"},
+		{name: "zero timeout", interval: time.Second, want: "timeout"},
+		{name: "timeout equals interval", interval: time.Second, timeout: time.Second, want: "shorter"},
+		{name: "timeout exceeds interval", interval: time.Second, timeout: 2 * time.Second, want: "shorter"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewNode(validConfig(), 1, WithHeartbeat(test.interval, test.timeout))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewNode() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}

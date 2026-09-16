@@ -14,29 +14,33 @@ import (
 	"xtnet/net/packet"
 	"xtnet/net/rpc"
 	"xtnet/net/tcp"
+	xttimer "xtnet/timer"
 )
 
 type RPCClient struct {
-	node      *Node
-	nodeID    int
-	addr      string
-	client    net.IClient
-	netRPC    rpc.IRpc
-	connected atomic.Bool
-	closeOnce sync.Once
+	node             *Node
+	nodeID           int
+	addr             string
+	client           net.IClient
+	netRPC           rpc.IRpc
+	connected        atomic.Bool
+	closeOnce        sync.Once
+	heartbeatTimer   *xttimer.WheelTimer
+	heartbeatPending bool
 }
 
 func newRPCClient(node *Node, nodeID int, addr string) (*RPCClient, error) {
-	c := &RPCClient{node: node, nodeID: nodeID, addr: addr}
+	c := &RPCClient{
+		node:           node,
+		nodeID:         nodeID,
+		addr:           addr,
+		heartbeatTimer: node.controlTimeWheel.NewTimer(),
+	}
 
 	events := eventhandler.NewClientEventHandler()
 	events.OnClientPacket = func(net.IClient, *packet.ReadPacket) {}
 	events.OnConnectionBroken = func(net.IClient) {
-		c.connected.Store(false)
-		node.removeRPCClient(nodeID, c)
-		if nodeID == node.mainNodeID {
-			node.routeCache.invalidateAll()
-		}
+		c.markDisconnected()
 	}
 
 	dispatcher := frame.NewDirectDispatcher()
@@ -150,9 +154,73 @@ func (c *RPCClient) requestSync(expireMS time.Duration, op operation, request, r
 	return decodeResultPayload(payload, response)
 }
 
+func (c *RPCClient) startHeartbeat() {
+	c.node.controlLoop.Post(func() {
+		if c.Connected() {
+			c.scheduleHeartbeat()
+		}
+	})
+}
+
+func (c *RPCClient) scheduleHeartbeat() {
+	c.heartbeatTimer.Start(c.node.heartbeatInterval, 0, c.sendHeartbeat)
+}
+
+func (c *RPCClient) sendHeartbeat() {
+	if !c.Connected() || c.heartbeatPending {
+		return
+	}
+	c.heartbeatPending = true
+	err := c.requestAsync(c.node.heartbeatTimeout, opHeartbeat, &rpcpb.HeartbeatRequest{}, &rpcpb.HeartbeatResponse{}, func(err error) {
+		if !c.Connected() {
+			return
+		}
+		c.node.controlLoop.Post(func() { c.handleHeartbeatResult(err) })
+	})
+	if err != nil {
+		c.handleHeartbeatResult(err)
+	}
+}
+
+func (c *RPCClient) handleHeartbeatResult(err error) {
+	if !c.heartbeatPending {
+		return
+	}
+	c.heartbeatPending = false
+	if !c.Connected() {
+		return
+	}
+	if err != nil {
+		c.Close()
+		return
+	}
+	c.scheduleHeartbeat()
+}
+
+func (c *RPCClient) markDisconnected() {
+	if !c.connected.Swap(false) {
+		return
+	}
+	if c.heartbeatTimer != nil {
+		c.heartbeatTimer.Stop()
+	}
+	c.node.removeRPCClient(c.nodeID, c)
+	if c.nodeID == c.node.mainNodeID {
+		c.node.routeCache.invalidateAll()
+	}
+}
+
 func (c *RPCClient) Close() {
+	c.markDisconnected()
+	c.closeTransport()
+}
+
+func (c *RPCClient) closeTransport() {
+	c.connected.Store(false)
+	if c.heartbeatTimer != nil {
+		c.heartbeatTimer.Stop()
+	}
 	c.closeOnce.Do(func() {
-		c.connected.Store(false)
 		if c.client != nil {
 			c.client.Close(false)
 		}

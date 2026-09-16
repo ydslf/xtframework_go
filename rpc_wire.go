@@ -19,6 +19,7 @@ const (
 	opLookup                    = rpcpb.RpcOperation_RPC_OPERATION_LOOKUP
 	opDeliver                   = rpcpb.RpcOperation_RPC_OPERATION_DELIVER
 	opRouteInvalidate           = rpcpb.RpcOperation_RPC_OPERATION_ROUTE_INVALIDATE
+	opHeartbeat                 = rpcpb.RpcOperation_RPC_OPERATION_HEARTBEAT
 )
 
 type operationProtocol interface {

@@ -12,6 +12,7 @@ enum RpcOperation {
   RPC_OPERATION_LOOKUP = 4;
   RPC_OPERATION_DELIVER = 5;
   RPC_OPERATION_ROUTE_INVALIDATE = 6;
+  RPC_OPERATION_HEARTBEAT = 7;
 }
 
 message RpcEnvelope {
@@ -43,6 +44,10 @@ message RegisterNodeRequest {
 }
 
 message RegisterNodeResponse {}
+
+message HeartbeatRequest {}
+
+message HeartbeatResponse {}
 
 message RegisterRequest {
   ServiceLocation location = 1;

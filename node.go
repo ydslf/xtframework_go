@@ -19,6 +19,7 @@ import (
 	"xtnet/net/packet"
 	"xtnet/net/rpc"
 	"xtnet/net/tcp"
+	xttimer "xtnet/timer"
 )
 
 const (
@@ -32,6 +33,8 @@ const (
 const (
 	defaultRouteCacheTTL      = 30 * time.Minute
 	defaultServiceCallTimeout = 3 * time.Second
+	defaultHeartbeatInterval  = 3 * time.Second
+	defaultHeartbeatTimeout   = 2 * time.Second
 )
 
 var byteOrder binary.ByteOrder = binary.BigEndian
@@ -44,6 +47,8 @@ type nodeOptions struct {
 	routeCacheTTL         time.Duration
 	serviceCallTimeout    time.Duration
 	serviceCallTimeoutSet bool
+	heartbeatInterval     time.Duration
+	heartbeatTimeout      time.Duration
 	errorHandler          func(error)
 }
 
@@ -65,6 +70,15 @@ func WithLogger(logger *xtlog.Logger) NodeOption {
 
 func WithConnectTimeout(timeout time.Duration) NodeOption {
 	return func(options *nodeOptions) { options.connectTimeout = timeout }
+}
+
+// WithHeartbeat sets how often a heartbeat probe starts and how long its
+// response may take. A single failed probe closes and evicts the RPC client.
+func WithHeartbeat(interval, timeout time.Duration) NodeOption {
+	return func(options *nodeOptions) {
+		options.heartbeatInterval = interval
+		options.heartbeatTimeout = timeout
+	}
 }
 
 // WithServiceCallTimeout 设置业务 Service 调用的默认超时时长，并覆盖 YAML 中的配置。
@@ -121,14 +135,20 @@ type Node struct {
 	serviceOrder  []ServiceKey
 	localServices map[ServiceKey]*serviceRuntime
 
-	rpcServer     xtnetNet.IServer
-	serverRPC     rpc.IRpc
-	remoteNodesMu sync.RWMutex
-	remoteNodes   map[xtnetNet.ISession]*RemoteNode //所有node保存的session对应的远端node
-	registry      ServiceRegistry                   //主node保存的所有service地址
+	rpcServer        xtnetNet.IServer
+	serverRPC        rpc.IRpc
+	remoteNodesMu    sync.RWMutex
+	remoteNodes      map[xtnetNet.ISession]*RemoteNode //所有node保存的session对应的远端node
+	registry         ServiceRegistry                   //主node保存的所有service地址
+	controlLoop      *frame.Loop
+	controlLoopWG    sync.WaitGroup
+	controlTimeWheel *xttimer.TimeWheel
+	controlStarted   bool
 
 	connectTimeout     time.Duration
 	serviceCallTimeout time.Duration
+	heartbeatInterval  time.Duration
+	heartbeatTimeout   time.Duration
 	clientsMu          sync.RWMutex
 	rpcClients         map[int]*RPCClient //所有node保存的连接远端node的RPCClient
 	routeCache         *serviceRouteCache //非主node保存的非本地service地址
@@ -151,6 +171,8 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		connectTimeout:     5 * time.Second,
 		routeCacheTTL:      defaultRouteCacheTTL,
 		serviceCallTimeout: defaultServiceCallTimeout,
+		heartbeatInterval:  defaultHeartbeatInterval,
+		heartbeatTimeout:   defaultHeartbeatTimeout,
 	}
 	for _, apply := range optionList {
 		if apply != nil {
@@ -165,6 +187,15 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 	}
 	if options.connectTimeout <= 0 {
 		return nil, fmt.Errorf("connect timeout must be positive")
+	}
+	if options.heartbeatInterval <= 0 {
+		return nil, fmt.Errorf("heartbeat interval must be positive")
+	}
+	if options.heartbeatTimeout <= 0 {
+		return nil, fmt.Errorf("heartbeat timeout must be positive")
+	}
+	if options.heartbeatTimeout >= options.heartbeatInterval {
+		return nil, fmt.Errorf("heartbeat timeout must be shorter than heartbeat interval")
 	}
 	if options.routeCacheTTL < 0 {
 		return nil, fmt.Errorf("route cache TTL must not be negative")
@@ -219,10 +250,13 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		factories:          options.factories,
 		connectTimeout:     options.connectTimeout,
 		serviceCallTimeout: options.serviceCallTimeout,
+		heartbeatInterval:  options.heartbeatInterval,
+		heartbeatTimeout:   options.heartbeatTimeout,
 		routeCache:         newServiceRouteCache(options.routeCacheTTL),
 		errorHandler:       options.errorHandler,
 		localServices:      make(map[ServiceKey]*serviceRuntime),
 		remoteNodes:        make(map[xtnetNet.ISession]*RemoteNode),
+		controlLoop:        frame.NewLoop(frame.LoopSizeMin, true),
 	}
 	node.state.Store(nodeStateInitial)
 
@@ -311,6 +345,7 @@ func (n *Node) Start() error {
 	if !n.state.CompareAndSwap(nodeStateInitial, nodeStateStarting) {
 		return ErrNodeRunning
 	}
+	n.startControlLoop()
 
 	if err := n.startRPCServer(); err != nil {
 		n.rollbackStart()
@@ -338,6 +373,22 @@ func (n *Node) Start() error {
 
 	n.state.Store(nodeStateRunning)
 	return nil
+}
+
+func (n *Node) startControlLoop() {
+	startFrameLoop(n.controlLoop, &n.controlLoopWG)
+	n.controlTimeWheel = xttimer.NewTimeWheel(n.controlLoop, 0)
+	n.controlStarted = true
+}
+
+func (n *Node) stopControlLoop() {
+	if !n.controlStarted {
+		return
+	}
+	n.controlTimeWheel.Close()
+	n.controlLoop.Close(false)
+	n.controlLoopWG.Wait()
+	n.controlStarted = false
 }
 
 func (n *Node) startRPCServer() error {
@@ -789,7 +840,7 @@ func (n *Node) getRPCClient(nodeID int, addr string) (*RPCClient, error) {
 		if current.Connected() && current.Addr() == addr {
 			return current, nil
 		}
-		current.Close()
+		current.closeTransport()
 		delete(n.rpcClients, nodeID)
 	}
 	client, err := newRPCClient(n, nodeID, addr)
@@ -800,10 +851,11 @@ func (n *Node) getRPCClient(nodeID int, addr string) (*RPCClient, error) {
 		NodeId:   int64(n.id),
 		NodeAddr: n.nodeConfig.ListenAddr,
 	}, &rpcpb.RegisterNodeResponse{}); err != nil {
-		client.Close()
+		client.closeTransport()
 		return nil, fmt.Errorf("register node %d with node %d: %w", n.id, nodeID, err)
 	}
 	n.rpcClients[nodeID] = client
+	client.startHeartbeat()
 	return client, nil
 }
 
@@ -862,6 +914,13 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 	}
 	sourceNode := remoteNode.id
 	switch op {
+	case opHeartbeat:
+		var request rpcpb.HeartbeatRequest
+		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		_ = n.respondRPC(session, contextID, &rpcpb.HeartbeatResponse{})
 	case opRegister:
 		var request rpcpb.RegisterRequest
 		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
@@ -1203,6 +1262,7 @@ func (n *Node) Stop() error {
 		runtime.registered = false
 	}
 	n.closeNetwork()
+	n.stopControlLoop()
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
 		if err := n.stopService(n.localServices[n.serviceOrder[i]]); err != nil {
 			errs = append(errs, err)
@@ -1269,6 +1329,7 @@ func (n *Node) rollbackStart() {
 		}
 	}
 	n.closeNetwork()
+	n.stopControlLoop()
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
 		_ = n.stopService(n.localServices[n.serviceOrder[i]])
 	}

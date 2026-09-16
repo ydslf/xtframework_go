@@ -128,6 +128,7 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 			name: "route-invalidate", op: opRouteInvalidate,
 			message: &rpcpb.RouteInvalidate{Target: &rpcpb.ServiceKey{Name: "room", Id: 1}},
 		},
+		{name: "heartbeat", op: opHeartbeat, message: &rpcpb.HeartbeatRequest{}},
 	}
 
 	for _, source := range protocols {
@@ -206,6 +207,7 @@ func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 		message operationProtocol
 	}{
 		{name: "register-node", message: &rpcpb.RegisterNodeResponse{}},
+		{name: "heartbeat", message: &rpcpb.HeartbeatResponse{}},
 		{name: "register", message: &rpcpb.RegisterResponse{}},
 		{name: "unregister", message: &rpcpb.UnregisterResponse{}},
 		{
