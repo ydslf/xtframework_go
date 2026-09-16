@@ -109,9 +109,10 @@ type serviceRuntime struct {
 
 // RemoteNode 表示一个已在当前 RPC session 上完成注册的远端节点。
 type RemoteNode struct {
-	id      int
-	addr    string
-	session xtnetNet.ISession
+	id             int
+	addr           string
+	session        xtnetNet.ISession
+	heartbeatTimer *xttimer.WheelTimer
 }
 
 func (n *RemoteNode) ID() int      { return n.id }
@@ -120,11 +121,16 @@ func (n *RemoteNode) Addr() string { return n.addr }
 // Node 表示一个框架进程。Node 的运行状态由框架内部管理，应用程序通过
 // 只读方法查询节点信息和服务信息。
 type Node struct {
-	id         int
-	mainNodeID int
-	state      atomic.Int32
-	config     *Config
-	nodeConfig NodeConfig
+	id                     int
+	mainNodeID             int
+	state                  atomic.Int32
+	config                 *Config
+	nodeConfig             NodeConfig
+	connectTimeout         time.Duration
+	serviceCallTimeout     time.Duration
+	heartbeatInterval      time.Duration
+	heartbeatTimeout       time.Duration
+	remoteHeartbeatTimeout time.Duration
 
 	logger            Logger
 	ownedLogger       *xtlog.Logger
@@ -135,23 +141,20 @@ type Node struct {
 	serviceOrder  []ServiceKey
 	localServices map[ServiceKey]*serviceRuntime
 
-	rpcServer        xtnetNet.IServer
-	serverRPC        rpc.IRpc
-	remoteNodesMu    sync.RWMutex
-	remoteNodes      map[xtnetNet.ISession]*RemoteNode //所有node保存的session对应的远端node
-	registry         ServiceRegistry                   //主node保存的所有service地址
+	rpcServer     xtnetNet.IServer
+	serverRPC     rpc.IRpc
+	remoteNodesMu sync.RWMutex
+	remoteNodes   map[xtnetNet.ISession]*RemoteNode //所有node保存的session对应的远端node
+	registry      ServiceRegistry                   //主node保存的所有service地址
+
 	controlLoop      *frame.Loop
 	controlLoopWG    sync.WaitGroup
 	controlTimeWheel *xttimer.TimeWheel
 	controlStarted   bool
 
-	connectTimeout     time.Duration
-	serviceCallTimeout time.Duration
-	heartbeatInterval  time.Duration
-	heartbeatTimeout   time.Duration
-	clientsMu          sync.RWMutex
-	rpcClients         map[int]*RPCClient //所有node保存的连接远端node的RPCClient
-	routeCache         *serviceRouteCache //非主node保存的非本地service地址
+	clientsMu  sync.RWMutex
+	rpcClients map[int]*RPCClient //所有node保存的连接远端node的RPCClient
+	routeCache *serviceRouteCache //非主node保存的非本地service地址
 
 	shutdownMutex sync.Mutex
 }
@@ -239,24 +242,25 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		options.errorHandler = func(err error) { nodeLogger.LogError("xtframework: %v", err) }
 	}
 	node := &Node{
-		id:                 nodeID,
-		mainNodeID:         config.MainNode,
-		registry:           options.registry,
-		logger:             nodeLogger,
-		ownedLogger:        ownedLogger,
-		rpcClients:         make(map[int]*RPCClient),
-		config:             config,
-		nodeConfig:         nodeConfig,
-		factories:          options.factories,
-		connectTimeout:     options.connectTimeout,
-		serviceCallTimeout: options.serviceCallTimeout,
-		heartbeatInterval:  options.heartbeatInterval,
-		heartbeatTimeout:   options.heartbeatTimeout,
-		routeCache:         newServiceRouteCache(options.routeCacheTTL),
-		errorHandler:       options.errorHandler,
-		localServices:      make(map[ServiceKey]*serviceRuntime),
-		remoteNodes:        make(map[xtnetNet.ISession]*RemoteNode),
-		controlLoop:        frame.NewLoop(frame.LoopSizeMin, true),
+		id:                     nodeID,
+		mainNodeID:             config.MainNode,
+		registry:               options.registry,
+		logger:                 nodeLogger,
+		ownedLogger:            ownedLogger,
+		rpcClients:             make(map[int]*RPCClient),
+		config:                 config,
+		nodeConfig:             nodeConfig,
+		factories:              options.factories,
+		connectTimeout:         options.connectTimeout,
+		serviceCallTimeout:     options.serviceCallTimeout,
+		heartbeatInterval:      options.heartbeatInterval,
+		heartbeatTimeout:       options.heartbeatTimeout,
+		remoteHeartbeatTimeout: options.heartbeatInterval + options.heartbeatTimeout + options.heartbeatInterval/3,
+		routeCache:             newServiceRouteCache(options.routeCacheTTL),
+		errorHandler:           options.errorHandler,
+		localServices:          make(map[ServiceKey]*serviceRuntime),
+		remoteNodes:            make(map[xtnetNet.ISession]*RemoteNode),
+		controlLoop:            frame.NewLoop(frame.LoopSizeMin, true),
 	}
 	node.state.Store(nodeStateInitial)
 
@@ -394,23 +398,19 @@ func (n *Node) stopControlLoop() {
 func (n *Node) startRPCServer() error {
 	events := eventhandler.NewServerEventHandler()
 	events.OnAccept = func(_ xtnetNet.IServer, session xtnetNet.ISession) {
-		remote := &RemoteNode{session: session}
+		remote := &RemoteNode{
+			session:        session,
+			heartbeatTimer: n.controlTimeWheel.NewTimer(),
+		}
 		session.SetUserData(remote)
 		n.remoteNodesMu.Lock()
 		n.remoteNodes[session] = remote
 		n.remoteNodesMu.Unlock()
+		n.armRemoteNodeTimeout(remote)
 	}
 	events.OnSessionPacket = func(xtnetNet.IServer, xtnetNet.ISession, *packet.ReadPacket) {}
 	events.OnSessionClose = func(_ xtnetNet.IServer, session xtnetNet.ISession) {
-		n.remoteNodesMu.Lock()
-		remote := n.remoteNodes[session]
-		delete(n.remoteNodes, session)
-		n.remoteNodesMu.Unlock()
-		if remote != nil && remote.id != 0 && n.IsMainNode() {
-			keys := n.serviceKeysForNode(remote.id)
-			n.registry.UnregisterNode(remote.id)
-			n.broadcastRouteInvalidation(keys...)
-		}
+		n.removeRemoteNode(session, false)
 	}
 
 	dispatcher := frame.NewDirectDispatcher()
@@ -920,6 +920,7 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
+		n.refreshRemoteHeartbeat(remoteNode)
 		_ = n.respondRPC(session, contextID, &rpcpb.HeartbeatResponse{})
 	case opRegister:
 		var request rpcpb.RegisterRequest
@@ -1116,6 +1117,7 @@ func (n *Node) handleRegisterNode(session xtnetNet.ISession, contextID int32, pa
 	if remote.id != 0 {
 		n.remoteNodesMu.Unlock()
 		if remote.id == nodeID && remote.addr == request.NodeAddr {
+			n.refreshRemoteHeartbeat(remote)
 			_ = n.respondRPC(session, contextID, &rpcpb.RegisterNodeResponse{})
 			return
 		}
@@ -1134,9 +1136,54 @@ func (n *Node) handleRegisterNode(session xtnetNet.ISession, contextID int32, pa
 	remote.addr = request.NodeAddr
 	n.remoteNodesMu.Unlock()
 	if previous != nil {
+		previous.heartbeatTimer.Stop()
 		previous.session.Close(false)
 	}
+	n.refreshRemoteHeartbeat(remote)
 	_ = n.respondRPC(session, contextID, &rpcpb.RegisterNodeResponse{})
+}
+
+func (n *Node) refreshRemoteHeartbeat(remote *RemoteNode) {
+	if remote == nil {
+		return
+	}
+	n.armRemoteNodeTimeout(remote)
+}
+
+func (n *Node) armRemoteNodeTimeout(remote *RemoteNode) {
+	n.controlLoop.Post(func() {
+		n.remoteNodesMu.RLock()
+		current := n.remoteNodes[remote.session]
+		n.remoteNodesMu.RUnlock()
+		if current != remote {
+			return
+		}
+		remote.heartbeatTimer.Start(n.remoteHeartbeatTimeout, 0, func() {
+			n.removeRemoteNode(remote.session, true)
+		})
+	})
+}
+
+func (n *Node) removeRemoteNode(session xtnetNet.ISession, closeSession bool) {
+	n.remoteNodesMu.Lock()
+	remote := n.remoteNodes[session]
+	if remote != nil {
+		delete(n.remoteNodes, session)
+	}
+	n.remoteNodesMu.Unlock()
+	if remote == nil {
+		return
+	}
+
+	remote.heartbeatTimer.Stop()
+	if remote.id != 0 && n.IsMainNode() {
+		keys := n.serviceKeysForNode(remote.id)
+		n.registry.UnregisterNode(remote.id)
+		n.broadcastRouteInvalidation(keys...)
+	}
+	if closeSession {
+		session.Close(false)
+	}
 }
 
 func (n *Node) registeredRemoteNode(session xtnetNet.ISession) (*RemoteNode, error) {
@@ -1312,6 +1359,7 @@ func (n *Node) closeNetwork() {
 	n.remoteNodes = make(map[xtnetNet.ISession]*RemoteNode)
 	n.remoteNodesMu.Unlock()
 	for _, remote := range remoteNodes {
+		remote.heartbeatTimer.Stop()
 		remote.session.Close(false)
 	}
 	if n.rpcServer != nil {

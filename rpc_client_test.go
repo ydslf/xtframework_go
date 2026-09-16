@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"xtframework/internal/rpcpb"
 )
 
 func TestRPCClientHeartbeatFailureEvictsConnection(t *testing.T) {
@@ -65,5 +67,71 @@ func TestRPCClientHeartbeatRoundTrip(t *testing.T) {
 	}
 	if !client.Connected() {
 		t.Fatal("client disconnected after successful heartbeat probes")
+	}
+	mainNode.remoteNodesMu.RLock()
+	remoteCount := len(mainNode.remoteNodes)
+	mainNode.remoteNodesMu.RUnlock()
+	if remoteCount != 1 {
+		t.Fatalf("remote nodes after heartbeat probes = %d, want 1", remoteCount)
+	}
+}
+
+func TestRemoteNodeHeartbeatTimeoutRemovesNode(t *testing.T) {
+	collector := &serviceCollector{services: make(map[string]*frameworkTestService)}
+	factories := NewFactoryRegistry()
+	if err := factories.Register("room", collector.factory); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		MainNode: 1,
+		Nodes: []NodeConfig{
+			{ID: 1, ListenAddr: freeAddress(t)},
+			{ID: 2, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "room", ID: 1}}},
+		},
+	}
+	logger := newTestXTLogger(t)
+	heartbeat := WithHeartbeat(100*time.Millisecond, 50*time.Millisecond)
+	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithLogger(logger), heartbeat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories), WithLogger(logger), heartbeat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mainNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mainNode.Stop() })
+	if err := clientNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientNode.Stop() })
+
+	key := ServiceKey{Name: "room", ID: 1}
+	if _, found := mainNode.RegisteredService(key); !found {
+		t.Fatal("remote service was not registered")
+	}
+
+	clientWithoutHeartbeat, err := newRPCClient(clientNode, mainNode.ID(), mainNode.ListenAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(clientWithoutHeartbeat.Close)
+	if err := clientWithoutHeartbeat.requestSync(time.Second, opRegisterNode, &rpcpb.RegisterNodeRequest{
+		NodeId:   int64(clientNode.ID()),
+		NodeAddr: clientNode.ListenAddr(),
+	}, &rpcpb.RegisterNodeResponse{}); err != nil {
+		t.Fatal(err)
+	}
+
+	waitUntil(t, func() bool {
+		mainNode.remoteNodesMu.RLock()
+		count := len(mainNode.remoteNodes)
+		mainNode.remoteNodesMu.RUnlock()
+		return count == 0
+	}, "main node to expire a remote node without heartbeats")
+	if _, found := mainNode.RegisteredService(key); found {
+		t.Fatal("remote service remains registered after heartbeat timeout")
 	}
 }
