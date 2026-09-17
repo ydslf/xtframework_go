@@ -492,6 +492,92 @@ func TestNodeStartRollsBackRegisteredServices(t *testing.T) {
 	}
 }
 
+func TestDuplicateRegistrationsKeepOriginalNodeAndService(t *testing.T) {
+	collector := &serviceCollector{services: make(map[string]*frameworkTestService)}
+	factories := NewFactoryRegistry()
+	if err := factories.Register("room", collector.factory); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		MainNode: 1,
+		Nodes: []NodeConfig{
+			{ID: 1, ListenAddr: freeAddress(t)},
+			{ID: 2, ListenAddr: freeAddress(t), Services: []ServiceConfig{{Name: "room", ID: 1}}},
+		},
+	}
+	logger := newTestXTLogger(t)
+	mainNode, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceNode, err := NewNode(cfg, 2, WithFactoryRegistry(factories), WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mainNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mainNode.Stop() })
+	if err := serviceNode.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = serviceNode.Stop() })
+
+	originalClient, err := serviceNode.mainClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerNode := &rpcpb.RegisterNodeRequest{
+		NodeId:   int64(serviceNode.ID()),
+		NodeAddr: serviceNode.ListenAddr(),
+	}
+	if err := originalClient.requestSync(time.Second, opRegisterNode, registerNode, &rpcpb.RegisterNodeResponse{}); !errors.Is(err, ErrNodeExists) {
+		t.Fatalf("duplicate node registration on original connection error = %v, want ErrNodeExists", err)
+	}
+	if !originalClient.Connected() {
+		t.Fatal("original node connection was replaced or closed")
+	}
+
+	location := ServiceLocation{
+		ServiceName: "room",
+		ServiceID:   1,
+		NodeID:      serviceNode.ID(),
+		NodeAddr:    serviceNode.ListenAddr(),
+	}
+	if err := originalClient.requestSync(time.Second, opRegister, &rpcpb.RegisterRequest{
+		Location: serviceLocationToProto(location),
+	}, &rpcpb.RegisterResponse{}); !errors.Is(err, ErrServiceExists) {
+		t.Fatalf("duplicate service registration error = %v, want ErrServiceExists", err)
+	}
+	if got, found := mainNode.RegisteredService(location.Key()); !found || got != location {
+		t.Fatalf("registered service after duplicate = %+v, %v; want original %+v", got, found, location)
+	}
+
+	duplicateClient, err := newRPCClient(serviceNode, mainNode.ID(), mainNode.ListenAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer duplicateClient.Close()
+	if err := duplicateClient.requestSync(time.Second, opRegisterNode, registerNode, &rpcpb.RegisterNodeResponse{}); !errors.Is(err, ErrNodeExists) {
+		t.Fatalf("duplicate node registration on new connection error = %v, want ErrNodeExists", err)
+	}
+	if !originalClient.Connected() {
+		t.Fatal("duplicate node registration displaced the original connection")
+	}
+
+	mainNode.remoteNodesMu.RLock()
+	registeredCount := 0
+	for _, remote := range mainNode.remoteNodes {
+		if remote.id == serviceNode.ID() {
+			registeredCount++
+		}
+	}
+	mainNode.remoteNodesMu.RUnlock()
+	if registeredCount != 1 {
+		t.Fatalf("registered sessions for node %d = %d, want 1", serviceNode.ID(), registeredCount)
+	}
+}
+
 func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 	collector := &serviceCollector{services: make(map[string]*frameworkTestService)}
 	factories := NewFactoryRegistry()

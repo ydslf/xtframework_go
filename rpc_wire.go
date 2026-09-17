@@ -111,6 +111,8 @@ func decodeResult(rpk *packet.ReadPacket) ([]byte, error) {
 			cause = ErrServiceExists
 		case "node_not_found":
 			cause = ErrNodeNotFound
+		case "node_exists":
+			cause = ErrNodeExists
 		case "invalid_message":
 			cause = ErrInvalidMessage
 		}

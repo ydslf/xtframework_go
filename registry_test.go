@@ -11,8 +11,8 @@ func TestMemoryRegistry(t *testing.T) {
 	if err := registry.Register(location); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Register(location); err != nil {
-		t.Fatalf("idempotent registration failed: %v", err)
+	if err := registry.Register(location); !errors.Is(err, ErrServiceExists) {
+		t.Fatalf("duplicate registration error = %v, want ErrServiceExists", err)
 	}
 	other := location
 	other.NodeID = 3

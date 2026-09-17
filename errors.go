@@ -4,6 +4,7 @@ import "errors"
 
 var (
 	ErrNodeNotFound    = errors.New("node not found")
+	ErrNodeExists      = errors.New("node already registered")
 	ErrServiceNotFound = errors.New("service not found")
 	ErrServiceExists   = errors.New("service already registered")
 	ErrFactoryNotFound = errors.New("service factory not found")

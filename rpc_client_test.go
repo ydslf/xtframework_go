@@ -112,6 +112,18 @@ func TestRemoteNodeHeartbeatTimeoutRemovesNode(t *testing.T) {
 	if _, found := mainNode.RegisteredService(key); !found {
 		t.Fatal("remote service was not registered")
 	}
+	originalClient, err := clientNode.mainClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalClient.Close()
+	waitUntil(t, func() bool {
+		mainNode.remoteNodesMu.RLock()
+		count := len(mainNode.remoteNodes)
+		mainNode.remoteNodesMu.RUnlock()
+		_, serviceFound := mainNode.RegisteredService(key)
+		return count == 0 && !serviceFound
+	}, "main node to remove the original node registration")
 
 	clientWithoutHeartbeat, err := newRPCClient(clientNode, mainNode.ID(), mainNode.ListenAddr())
 	if err != nil {
@@ -122,6 +134,16 @@ func TestRemoteNodeHeartbeatTimeoutRemovesNode(t *testing.T) {
 		NodeId:   int64(clientNode.ID()),
 		NodeAddr: clientNode.ListenAddr(),
 	}, &rpcpb.RegisterNodeResponse{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := clientWithoutHeartbeat.requestSync(time.Second, opRegister, &rpcpb.RegisterRequest{
+		Location: serviceLocationToProto(ServiceLocation{
+			ServiceName: "room",
+			ServiceID:   1,
+			NodeID:      clientNode.ID(),
+			NodeAddr:    clientNode.ListenAddr(),
+		}),
+	}, &rpcpb.RegisterResponse{}); err != nil {
 		t.Fatal(err)
 	}
 

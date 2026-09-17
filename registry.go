@@ -52,9 +52,6 @@ func (r *MemoryRegistry) Register(location ServiceLocation) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if current, exists := r.services[key]; exists {
-		if current == location {
-			return nil
-		}
 		return fmt.Errorf("%w: %s belongs to node %d", ErrServiceExists, key, current.NodeID)
 	}
 	r.services[key] = location

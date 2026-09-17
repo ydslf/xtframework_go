@@ -80,6 +80,7 @@ func TestRPCResultUsesProtobufAndPreservesErrors(t *testing.T) {
 		{code: "service_not_found", want: ErrServiceNotFound},
 		{code: "service_exists", want: ErrServiceExists},
 		{code: "node_not_found", want: ErrNodeNotFound},
+		{code: "node_exists", want: ErrNodeExists},
 		{code: "invalid_message", want: ErrInvalidMessage},
 	} {
 		t.Run(test.code, func(t *testing.T) {

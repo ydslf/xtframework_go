@@ -1116,29 +1116,19 @@ func (n *Node) handleRegisterNode(session xtnetNet.ISession, contextID int32, pa
 	}
 	if remote.id != 0 {
 		n.remoteNodesMu.Unlock()
-		if remote.id == nodeID && remote.addr == request.NodeAddr {
-			n.refreshRemoteHeartbeat(remote)
-			_ = n.respondRPC(session, contextID, &rpcpb.RegisterNodeResponse{})
-			return
-		}
-		n.respondRPCError(session, contextID, rpcInvalidMessage(fmt.Errorf("rpc session is already registered as node %d", remote.id)))
+		n.respondRPCError(session, contextID, fmt.Errorf("%w: rpc session is already registered as node %d", ErrNodeExists, remote.id))
 		return
 	}
-	var previous *RemoteNode
 	for _, candidate := range n.remoteNodes {
 		if candidate != remote && candidate.id == nodeID {
-			previous = candidate
-			delete(n.remoteNodes, candidate.session)
-			break
+			n.remoteNodesMu.Unlock()
+			n.respondRPCError(session, contextID, fmt.Errorf("%w: node %d", ErrNodeExists, nodeID))
+			return
 		}
 	}
 	remote.id = nodeID
 	remote.addr = request.NodeAddr
 	n.remoteNodesMu.Unlock()
-	if previous != nil {
-		previous.heartbeatTimer.Stop()
-		previous.session.Close(false)
-	}
 	n.refreshRemoteHeartbeat(remote)
 	_ = n.respondRPC(session, contextID, &rpcpb.RegisterNodeResponse{})
 }
@@ -1212,6 +1202,8 @@ func (n *Node) respondRPCError(session xtnetNet.ISession, contextID int32, err e
 			code = "service_exists"
 		case errors.Is(err, ErrNodeNotFound):
 			code = "node_not_found"
+		case errors.Is(err, ErrNodeExists):
+			code = "node_exists"
 		case errors.Is(err, ErrInvalidMessage):
 			code = "invalid_message"
 		}
