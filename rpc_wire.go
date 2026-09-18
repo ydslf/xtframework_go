@@ -12,14 +12,16 @@ import (
 type operation = rpcpb.RpcOperation
 
 const (
-	opNone            operation = iota
-	opRegisterNode              = rpcpb.RpcOperation_RPC_OPERATION_REGISTER_NODE
-	opRegister                  = rpcpb.RpcOperation_RPC_OPERATION_REGISTER
-	opUnregister                = rpcpb.RpcOperation_RPC_OPERATION_UNREGISTER
-	opLookup                    = rpcpb.RpcOperation_RPC_OPERATION_LOOKUP
-	opDeliver                   = rpcpb.RpcOperation_RPC_OPERATION_DELIVER
-	opRouteInvalidate           = rpcpb.RpcOperation_RPC_OPERATION_ROUTE_INVALIDATE
-	opHeartbeat                 = rpcpb.RpcOperation_RPC_OPERATION_HEARTBEAT
+	opNone             operation = iota
+	opRegisterNode               = rpcpb.RpcOperation_RPC_OPERATION_REGISTER_NODE
+	opRegister                   = rpcpb.RpcOperation_RPC_OPERATION_REGISTER
+	opUnregister                 = rpcpb.RpcOperation_RPC_OPERATION_UNREGISTER
+	opLookup                     = rpcpb.RpcOperation_RPC_OPERATION_LOOKUP
+	opDeliver                    = rpcpb.RpcOperation_RPC_OPERATION_DELIVER
+	opRouteInvalidate            = rpcpb.RpcOperation_RPC_OPERATION_ROUTE_INVALIDATE
+	opHeartbeat                  = rpcpb.RpcOperation_RPC_OPERATION_HEARTBEAT
+	opSubscribe                  = rpcpb.RpcOperation_RPC_OPERATION_SUBSCRIBE
+	opServiceDiscovery           = rpcpb.RpcOperation_RPC_OPERATION_SERVICE_DISCOVERY
 )
 
 type operationProtocol interface {
@@ -161,6 +163,18 @@ func serviceKeyFromProto(key *rpcpb.ServiceKey) (ServiceKey, error) {
 		return ServiceKey{}, err
 	}
 	return ServiceKey{Name: key.Name, ID: id}, nil
+}
+
+func requiredRPCServiceKeys(keys []*rpcpb.ServiceKey, name string) ([]ServiceKey, error) {
+	result := make([]ServiceKey, 0, len(keys))
+	for i, message := range keys {
+		key, err := requiredRPCServiceKey(message, fmt.Sprintf("%s[%d]", name, i))
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, key)
+	}
+	return result, nil
 }
 
 func serviceLocationToProto(location ServiceLocation) *rpcpb.ServiceLocation {

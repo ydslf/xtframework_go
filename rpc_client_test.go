@@ -151,7 +151,8 @@ func TestRemoteNodeHeartbeatTimeoutRemovesNode(t *testing.T) {
 		mainNode.remoteNodesMu.RLock()
 		count := len(mainNode.remoteNodes)
 		mainNode.remoteNodesMu.RUnlock()
-		return count == 0
+		_, serviceFound := mainNode.RegisteredService(key)
+		return count == 0 && !serviceFound
 	}, "main node to expire a remote node without heartbeats")
 	if _, found := mainNode.RegisteredService(key); found {
 		t.Fatal("remote service remains registered after heartbeat timeout")

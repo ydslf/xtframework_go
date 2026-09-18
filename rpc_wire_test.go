@@ -129,6 +129,19 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 			name: "route-invalidate", op: opRouteInvalidate,
 			message: &rpcpb.RouteInvalidate{Target: &rpcpb.ServiceKey{Name: "room", Id: 1}},
 		},
+		{
+			name: "subscribe", op: opSubscribe,
+			message: &rpcpb.SubscribeRequest{Subscriber: &rpcpb.ServiceKey{Name: "watcher", Id: 1}, ServiceName: "room"},
+		},
+		{
+			name: "service-discovery", op: opServiceDiscovery,
+			message: &rpcpb.ServiceDiscovery{
+				Subscriber:  &rpcpb.ServiceKey{Name: "watcher", Id: 1},
+				ServiceName: "room",
+				EventType:   rpcpb.ServiceDiscoveryEventType_SERVICE_DISCOVERY_EVENT_TYPE_SNAPSHOT,
+				Services:    []*rpcpb.ServiceKey{{Name: "room", Id: 1}},
+			},
+		},
 		{name: "heartbeat", op: opHeartbeat, message: &rpcpb.HeartbeatRequest{}},
 	}
 
@@ -211,6 +224,7 @@ func TestRPCOperationResponsesRoundTrip(t *testing.T) {
 		{name: "heartbeat", message: &rpcpb.HeartbeatResponse{}},
 		{name: "register", message: &rpcpb.RegisterResponse{}},
 		{name: "unregister", message: &rpcpb.UnregisterResponse{}},
+		{name: "subscribe", message: &rpcpb.SubscribeResponse{}},
 		{
 			name:    "lookup",
 			message: &rpcpb.LookupResponse{Location: &rpcpb.ServiceLocation{ServiceName: "room", ServiceId: 1, NodeId: 2, NodeAddr: "node-2"}},

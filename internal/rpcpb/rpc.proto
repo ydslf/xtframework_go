@@ -13,6 +13,15 @@ enum RpcOperation {
   RPC_OPERATION_DELIVER = 5;
   RPC_OPERATION_ROUTE_INVALIDATE = 6;
   RPC_OPERATION_HEARTBEAT = 7;
+  RPC_OPERATION_SUBSCRIBE = 8;
+  RPC_OPERATION_SERVICE_DISCOVERY = 9;
+}
+
+enum ServiceDiscoveryEventType {
+  SERVICE_DISCOVERY_EVENT_TYPE_UNSPECIFIED = 0;
+  SERVICE_DISCOVERY_EVENT_TYPE_SNAPSHOT = 1;
+  SERVICE_DISCOVERY_EVENT_TYPE_ONLINE = 2;
+  SERVICE_DISCOVERY_EVENT_TYPE_OFFLINE = 3;
 }
 
 message RpcEnvelope {
@@ -71,6 +80,20 @@ message LookupResponse {
 
 message RouteInvalidate {
   ServiceKey target = 1;
+}
+
+message SubscribeRequest {
+  ServiceKey subscriber = 1;
+  string service_name = 2;
+}
+
+message SubscribeResponse {}
+
+message ServiceDiscovery {
+  ServiceKey subscriber = 1;
+  string service_name = 2;
+  ServiceDiscoveryEventType event_type = 3;
+  repeated ServiceKey services = 4;
 }
 
 message DeliverRequest {

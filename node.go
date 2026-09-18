@@ -101,10 +101,12 @@ func WithErrorHandler(handler func(error)) NodeOption {
 }
 
 type serviceRuntime struct {
-	service    Service
-	wg         sync.WaitGroup
-	started    bool
-	registered bool
+	service         Service
+	wg              sync.WaitGroup
+	started         bool
+	registered      atomic.Bool
+	subscriptionsMu sync.Mutex
+	subscriptions   map[string]struct{}
 }
 
 // RemoteNode 表示一个已在当前 RPC session 上完成注册的远端节点。
@@ -146,6 +148,7 @@ type Node struct {
 	remoteNodesMu sync.RWMutex
 	remoteNodes   map[xtnetNet.ISession]*RemoteNode //所有node保存的session对应的远端node
 	registry      ServiceRegistry                   //主node保存的所有service地址
+	subscriptions *serviceSubscriptionIndex         //主node保存的Service订阅关系
 
 	controlLoop      *frame.Loop
 	controlLoopWG    sync.WaitGroup
@@ -245,6 +248,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		id:                     nodeID,
 		mainNodeID:             config.MainNode,
 		registry:               options.registry,
+		subscriptions:          newServiceSubscriptionIndex(),
 		logger:                 nodeLogger,
 		ownedLogger:            ownedLogger,
 		rpcClients:             make(map[int]*RPCClient),
@@ -285,7 +289,10 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 			return nil, fmt.Errorf("services %s and %s share one loop", owner, key)
 		}
 		loops[service.Loop()] = key
-		node.localServices[key] = &serviceRuntime{service: service}
+		node.localServices[key] = &serviceRuntime{
+			service:       service,
+			subscriptions: make(map[string]struct{}),
+		}
 		node.serviceOrder = append(node.serviceOrder, key)
 	}
 	constructionSucceeded = true
@@ -372,7 +379,11 @@ func (n *Node) Start() error {
 			n.rollbackStart()
 			return fmt.Errorf("register service %s: %w", key, err)
 		}
-		runtime.registered = true
+		runtime.registered.Store(true)
+		if err := n.subscribeRuntime(key, runtime); err != nil {
+			n.rollbackStart()
+			return fmt.Errorf("subscribe service %s: %w", key, err)
+		}
 	}
 
 	n.state.Store(nodeStateRunning)
@@ -472,11 +483,13 @@ func (n *Node) registerService(key ServiceKey) error {
 		NodeAddr:    n.nodeConfig.ListenAddr,
 	}
 	if n.IsMainNode() {
-		if err := n.registry.Register(location); err != nil {
-			return err
-		}
-		n.broadcastRouteInvalidation(key)
-		return nil
+		return callOnLoop(n.controlLoop, func() error {
+			if err := n.registry.Register(location); err != nil {
+				return err
+			}
+			n.serviceRegistered(key)
+			return nil
+		})
 	}
 	client, err := n.mainClient()
 	if err != nil {
@@ -490,11 +503,13 @@ func (n *Node) registerService(key ServiceKey) error {
 
 func (n *Node) unregisterService(key ServiceKey) error {
 	if n.IsMainNode() {
-		if err := n.registry.Unregister(key, n.id); err != nil {
-			return err
-		}
-		n.broadcastRouteInvalidation(key)
-		return nil
+		return callOnLoop(n.controlLoop, func() error {
+			if err := n.registry.Unregister(key, n.id); err != nil {
+				return err
+			}
+			n.serviceUnregistered(key)
+			return nil
+		})
 	}
 	client, err := n.mainClient()
 	if err != nil {
@@ -934,18 +949,25 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			return
 		}
 		if !n.IsMainNode() {
-			err = fmt.Errorf("node %d is not the main node", n.id)
-		} else if location.NodeID != sourceNode || location.NodeAddr != remoteNode.addr {
-			err = fmt.Errorf("register location does not match registered node %d", sourceNode)
-		} else {
-			err = n.registry.Register(location)
-		}
-		if err != nil {
-			n.respondRPCError(session, contextID, err)
+			n.respondRPCError(session, contextID, fmt.Errorf("node %d is not the main node", n.id))
 			return
 		}
-		_ = n.respondRPC(session, contextID, &rpcpb.RegisterResponse{})
-		n.broadcastRouteInvalidation(location.Key())
+		if location.NodeID != sourceNode || location.NodeAddr != remoteNode.addr {
+			n.respondRPCError(session, contextID, fmt.Errorf("register location does not match registered node %d", sourceNode))
+			return
+		}
+		n.controlLoop.Post(func() {
+			if !n.remoteNodeIsCurrent(session, remoteNode) {
+				n.respondRPCError(session, contextID, fmt.Errorf("%w: node %d disconnected", ErrNodeNotFound, sourceNode))
+				return
+			}
+			if registerErr := n.registry.Register(location); registerErr != nil {
+				n.respondRPCError(session, contextID, registerErr)
+				return
+			}
+			n.serviceRegistered(location.Key())
+			_ = n.respondRPC(session, contextID, &rpcpb.RegisterResponse{})
+		})
 	case opUnregister:
 		var request rpcpb.UnregisterRequest
 		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
@@ -958,16 +980,57 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			return
 		}
 		if !n.IsMainNode() {
-			err = fmt.Errorf("node %d is not the main node", n.id)
-		} else {
-			err = n.registry.Unregister(target, sourceNode)
-		}
-		if err != nil {
-			n.respondRPCError(session, contextID, err)
+			n.respondRPCError(session, contextID, fmt.Errorf("node %d is not the main node", n.id))
 			return
 		}
-		_ = n.respondRPC(session, contextID, &rpcpb.UnregisterResponse{})
-		n.broadcastRouteInvalidation(target)
+		n.controlLoop.Post(func() {
+			if !n.remoteNodeIsCurrent(session, remoteNode) {
+				n.respondRPCError(session, contextID, fmt.Errorf("%w: node %d disconnected", ErrNodeNotFound, sourceNode))
+				return
+			}
+			if unregisterErr := n.registry.Unregister(target, sourceNode); unregisterErr != nil {
+				n.respondRPCError(session, contextID, unregisterErr)
+				return
+			}
+			n.serviceUnregistered(target)
+			_ = n.respondRPC(session, contextID, &rpcpb.UnregisterResponse{})
+		})
+	case opSubscribe:
+		var request rpcpb.SubscribeRequest
+		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		subscriber, decodeErr := requiredRPCServiceKey(request.Subscriber, "subscribe subscriber")
+		if decodeErr != nil {
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		serviceName, decodeErr := normalizeSubscribedServiceName(request.ServiceName)
+		if decodeErr != nil || serviceName != request.ServiceName {
+			if decodeErr == nil {
+				decodeErr = fmt.Errorf("subscribed service name is not normalized")
+			}
+			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
+			return
+		}
+		if !n.IsMainNode() {
+			n.respondRPCError(session, contextID, fmt.Errorf("node %d is not the main node", n.id))
+			return
+		}
+		n.controlLoop.Post(func() {
+			if !n.remoteNodeIsCurrent(session, remoteNode) {
+				n.respondRPCError(session, contextID, fmt.Errorf("%w: node %d disconnected", ErrNodeNotFound, sourceNode))
+				return
+			}
+			if subscribeErr := n.addServiceSubscription(subscriber, sourceNode, serviceName); subscribeErr != nil {
+				n.respondRPCError(session, contextID, subscribeErr)
+				return
+			}
+			services := n.serviceSnapshot(serviceName)
+			n.sendServiceDiscovery(subscriber, serviceName, rpcpb.ServiceDiscoveryEventType_SERVICE_DISCOVERY_EVENT_TYPE_SNAPSHOT, services)
+			_ = n.respondRPC(session, contextID, &rpcpb.SubscribeResponse{})
+		})
 	case opLookup:
 		var request rpcpb.LookupRequest
 		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
@@ -1167,9 +1230,12 @@ func (n *Node) removeRemoteNode(session xtnetNet.ISession, closeSession bool) {
 
 	remote.heartbeatTimer.Stop()
 	if remote.id != 0 && n.IsMainNode() {
-		keys := n.serviceKeysForNode(remote.id)
-		n.registry.UnregisterNode(remote.id)
-		n.broadcastRouteInvalidation(keys...)
+		nodeID := remote.id
+		n.controlLoop.Post(func() {
+			keys := n.serviceKeysForNode(nodeID)
+			n.registry.UnregisterNode(nodeID)
+			n.servicesUnregistered(keys)
+		})
 	}
 	if closeSession {
 		session.Close(false)
@@ -1184,6 +1250,12 @@ func (n *Node) registeredRemoteNode(session xtnetNet.ISession) (*RemoteNode, err
 		return nil, fmt.Errorf("%w: rpc session is not registered", ErrNodeNotFound)
 	}
 	return remote, nil
+}
+
+func (n *Node) remoteNodeIsCurrent(session xtnetNet.ISession, remote *RemoteNode) bool {
+	n.remoteNodesMu.RLock()
+	defer n.remoteNodesMu.RUnlock()
+	return n.remoteNodes[session] == remote && remote != nil && remote.id != 0
 }
 
 func rpcInvalidMessage(err error) error {
@@ -1234,6 +1306,7 @@ func (n *Node) serviceKeysForNode(nodeID int) []ServiceKey {
 			keys = append(keys, location.Key())
 		}
 	}
+	sortServiceKeys(keys)
 	return keys
 }
 
@@ -1292,13 +1365,13 @@ func (n *Node) Stop() error {
 	var errs []error
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
 		runtime := n.localServices[n.serviceOrder[i]]
-		if !runtime.registered {
+		if !runtime.registered.Load() {
 			continue
 		}
 		if err := n.unregisterService(n.serviceOrder[i]); err != nil && !errors.Is(err, ErrServiceNotFound) {
 			errs = append(errs, err)
 		}
-		runtime.registered = false
+		runtime.registered.Store(false)
 	}
 	n.closeNetwork()
 	n.stopControlLoop()
@@ -1363,9 +1436,9 @@ func (n *Node) closeNetwork() {
 func (n *Node) rollbackStart() {
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
 		runtime := n.localServices[n.serviceOrder[i]]
-		if runtime.registered {
+		if runtime.registered.Load() {
 			_ = n.unregisterService(n.serviceOrder[i])
-			runtime.registered = false
+			runtime.registered.Store(false)
 		}
 	}
 	n.closeNetwork()

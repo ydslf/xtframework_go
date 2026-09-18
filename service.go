@@ -129,13 +129,16 @@ func NewBaseService(node *Node, config ServiceConfig) BaseService {
 	return BaseService{node: node, config: config, loop: frame.NewLoop(frame.LoopSizeMin, true), logger: logger}
 }
 
-func (s *BaseService) Name() string          { return s.config.Name }
-func (s *BaseService) ID() int               { return s.config.ID }
-func (s *BaseService) Loop() *frame.Loop     { return s.loop }
-func (s *BaseService) Config() ServiceConfig { return s.config }
-func (s *BaseService) Logger() Logger        { return s.logger }
-func (s *BaseService) Start() error          { return nil }
-func (s *BaseService) Stop() error           { return nil }
+func (s *BaseService) Name() string                               { return s.config.Name }
+func (s *BaseService) ID() int                                    { return s.config.ID }
+func (s *BaseService) Loop() *frame.Loop                          { return s.loop }
+func (s *BaseService) Config() ServiceConfig                      { return s.config }
+func (s *BaseService) Logger() Logger                             { return s.logger }
+func (s *BaseService) Start() error                               { return nil }
+func (s *BaseService) Stop() error                                { return nil }
+func (s *BaseService) HandleServiceSnapshot(string, []ServiceKey) {}
+func (s *BaseService) HandleServiceOnline(ServiceKey)             {}
+func (s *BaseService) HandleServiceOffline(ServiceKey)            {}
 func (s *BaseService) HandleRPCDirect(*MessageContext, uint32, []byte) error {
 	return fmt.Errorf("service %s:%d does not handle messages", s.Name(), s.ID())
 }
@@ -147,6 +150,15 @@ func (s *BaseService) HandleRPCDirectString(*MessageContext, string, []byte) err
 }
 func (s *BaseService) HandleRPCRequestString(*MessageContext, string, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("service %s:%d does not handle string requests", s.Name(), s.ID())
+}
+
+// Subscribe 订阅指定名字的全部 Service 实例。可以在 Start 中调用；此时
+// Node 会在当前 Service 注册成功后向主节点提交订阅。重复订阅会重新获取快照。
+func (s *BaseService) Subscribe(serviceName string) error {
+	if s.node == nil {
+		return ErrNodeStopped
+	}
+	return s.node.subscribeService(ServiceKey{Name: s.Name(), ID: s.ID()}, serviceName)
 }
 
 // Send2Service 异步发送一条业务消息。调用后，调用者不得再修改或复用 payload。

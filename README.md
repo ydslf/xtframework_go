@@ -104,6 +104,33 @@ _ = node.Start()
 defer node.Stop()
 ```
 
+## Service 订阅
+
+Service 可以按名字订阅其他 Service 的发现事件。`Subscribe` 可以在 `Start`
+中调用；框架会先完成当前 Service 的注册，再向主 Node 提交订阅：
+
+```go
+func (s *Gateway) Start() error {
+    return s.Subscribe("room")
+}
+
+func (s *Gateway) HandleServiceSnapshot(serviceName string, services []xtframework.ServiceKey) {
+    // 订阅建立时的完整快照；当前没有实例时 services 为空。
+}
+
+func (s *Gateway) HandleServiceOnline(service xtframework.ServiceKey) {
+    // 新的 room Service 注册成功。
+}
+
+func (s *Gateway) HandleServiceOffline(service xtframework.ServiceKey) {
+    // room Service 注销，或其 Node 与主 Node 断开。
+}
+```
+
+这些回调都在订阅者自己的 Service Loop 中按顺序执行。重复订阅不会重复保存
+订阅关系，但会重新发送当前完整快照。订阅者注销或所在 Node 断开时，主 Node
+会自动清理它的订阅关系。
+
 ## 日志
 
 框架约定一个进程只运行一个 Node。每个 Node 从自己的 `logger` 配置创建

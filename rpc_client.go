@@ -90,6 +90,43 @@ func (c *RPCClient) handleRPCDirect(_ net.ISession, rpk *packet.ReadPacket) {
 			return
 		}
 		c.node.routeCache.invalidate(key)
+	case opServiceDiscovery:
+		if c.nodeID != c.node.mainNodeID || c.node.IsMainNode() {
+			c.node.report(fmt.Errorf("service discovery push from node %d is not allowed", c.nodeID))
+			return
+		}
+		var notification rpcpb.ServiceDiscovery
+		if err := decodeOperationPayload(payload, &notification); err != nil {
+			c.node.report(rpcInvalidMessage(err))
+			return
+		}
+		subscriber, err := requiredRPCServiceKey(notification.Subscriber, "discovery subscriber")
+		if err != nil {
+			c.node.report(rpcInvalidMessage(err))
+			return
+		}
+		serviceName, err := normalizeSubscribedServiceName(notification.ServiceName)
+		if err != nil || serviceName != notification.ServiceName {
+			if err == nil {
+				err = fmt.Errorf("service name is not normalized")
+			}
+			c.node.report(rpcInvalidMessage(err))
+			return
+		}
+		services, err := requiredRPCServiceKeys(notification.Services, "discovery services")
+		if err != nil {
+			c.node.report(rpcInvalidMessage(err))
+			return
+		}
+		for _, service := range services {
+			if service.Name != serviceName {
+				c.node.report(rpcInvalidMessage(fmt.Errorf("discovery service %s does not match subscribed name %q", service, serviceName)))
+				return
+			}
+		}
+		if err := c.node.dispatchLocalServiceDiscovery(subscriber, serviceName, notification.EventType, services); err != nil {
+			c.node.report(err)
+		}
 	default:
 		c.node.report(fmt.Errorf("unsupported pushed rpc operation %d", op))
 	}
