@@ -267,12 +267,10 @@ func (n *Node) sendServiceDiscovery(subscriber ServiceKey, serviceName string, e
 	}
 
 	n.remoteNodesMu.RLock()
+	remote := n.remoteNodes[location.NodeID]
 	var session xtnetNet.ISession
-	for candidate, remote := range n.remoteNodes {
-		if remote.id == location.NodeID {
-			session = candidate
-			break
-		}
+	if remote != nil {
+		session = remote.session
 	}
 	n.remoteNodesMu.RUnlock()
 	if session == nil {

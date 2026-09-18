@@ -115,6 +115,7 @@ type RemoteNode struct {
 	addr           string
 	session        xtnetNet.ISession
 	heartbeatTimer *xttimer.WheelTimer
+	active         atomic.Bool
 }
 
 func (n *RemoteNode) ID() int      { return n.id }
@@ -146,9 +147,9 @@ type Node struct {
 	rpcServer     xtnetNet.IServer
 	serverRPC     rpc.IRpc
 	remoteNodesMu sync.RWMutex
-	remoteNodes   map[xtnetNet.ISession]*RemoteNode //所有node保存的session对应的远端node
-	registry      ServiceRegistry                   //主node保存的所有service地址
-	subscriptions *serviceSubscriptionIndex         //主node保存的Service订阅关系
+	remoteNodes   map[int]*RemoteNode       //所有node保存的已注册远端node，key为node id
+	registry      ServiceRegistry           //主node保存的所有service地址
+	subscriptions *serviceSubscriptionIndex //主node保存的Service订阅关系
 
 	controlLoop      *frame.Loop
 	controlLoopWG    sync.WaitGroup
@@ -263,7 +264,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		routeCache:             newServiceRouteCache(options.routeCacheTTL),
 		errorHandler:           options.errorHandler,
 		localServices:          make(map[ServiceKey]*serviceRuntime),
-		remoteNodes:            make(map[xtnetNet.ISession]*RemoteNode),
+		remoteNodes:            make(map[int]*RemoteNode),
 		controlLoop:            frame.NewLoop(frame.LoopSizeMin, true),
 	}
 	node.state.Store(nodeStateInitial)
@@ -413,10 +414,8 @@ func (n *Node) startRPCServer() error {
 			session:        session,
 			heartbeatTimer: n.controlTimeWheel.NewTimer(),
 		}
+		remote.active.Store(true)
 		session.SetUserData(remote)
-		n.remoteNodesMu.Lock()
-		n.remoteNodes[session] = remote
-		n.remoteNodesMu.Unlock()
 		n.armRemoteNodeTimeout(remote)
 	}
 	events.OnSessionPacket = func(xtnetNet.IServer, xtnetNet.ISession, *packet.ReadPacket) {}
@@ -1170,27 +1169,31 @@ func (n *Node) handleRegisterNode(session xtnetNet.ISession, contextID int32, pa
 		)))
 		return
 	}
-	n.remoteNodesMu.Lock()
-	remote := n.remoteNodes[session]
+	remote := remoteNodeFromSession(session)
 	if remote == nil {
-		n.remoteNodesMu.Unlock()
 		n.respondRPCError(session, contextID, rpcInvalidMessage(fmt.Errorf("rpc session is not tracked")))
 		return
 	}
-	if remote.id != 0 {
+	n.remoteNodesMu.Lock()
+	if !remote.active.Load() {
 		n.remoteNodesMu.Unlock()
-		n.respondRPCError(session, contextID, fmt.Errorf("%w: rpc session is already registered as node %d", ErrNodeExists, remote.id))
+		n.respondRPCError(session, contextID, fmt.Errorf("%w: rpc session is closed", ErrNodeNotFound))
 		return
 	}
-	for _, candidate := range n.remoteNodes {
-		if candidate != remote && candidate.id == nodeID {
-			n.remoteNodesMu.Unlock()
-			n.respondRPCError(session, contextID, fmt.Errorf("%w: node %d", ErrNodeExists, nodeID))
-			return
-		}
+	if remote.id != 0 {
+		registeredID := remote.id
+		n.remoteNodesMu.Unlock()
+		n.respondRPCError(session, contextID, fmt.Errorf("%w: rpc session is already registered as node %d", ErrNodeExists, registeredID))
+		return
+	}
+	if n.remoteNodes[nodeID] != nil {
+		n.remoteNodesMu.Unlock()
+		n.respondRPCError(session, contextID, fmt.Errorf("%w: node %d", ErrNodeExists, nodeID))
+		return
 	}
 	remote.id = nodeID
 	remote.addr = request.NodeAddr
+	n.remoteNodes[nodeID] = remote
 	n.remoteNodesMu.Unlock()
 	n.refreshRemoteHeartbeat(remote)
 	_ = n.respondRPC(session, contextID, &rpcpb.RegisterNodeResponse{})
@@ -1205,32 +1208,33 @@ func (n *Node) refreshRemoteHeartbeat(remote *RemoteNode) {
 
 func (n *Node) armRemoteNodeTimeout(remote *RemoteNode) {
 	n.controlLoop.Post(func() {
-		n.remoteNodesMu.RLock()
-		current := n.remoteNodes[remote.session]
-		n.remoteNodesMu.RUnlock()
-		if current != remote {
+		if !remote.active.Load() {
 			return
 		}
 		remote.heartbeatTimer.Start(n.remoteHeartbeatTimeout, 0, func() {
 			n.removeRemoteNode(remote.session, true)
 		})
+		if !remote.active.Load() {
+			remote.heartbeatTimer.Stop()
+		}
 	})
 }
 
 func (n *Node) removeRemoteNode(session xtnetNet.ISession, closeSession bool) {
-	n.remoteNodesMu.Lock()
-	remote := n.remoteNodes[session]
-	if remote != nil {
-		delete(n.remoteNodes, session)
-	}
-	n.remoteNodesMu.Unlock()
-	if remote == nil {
+	remote := remoteNodeFromSession(session)
+	if remote == nil || !remote.active.Swap(false) {
 		return
 	}
 
 	remote.heartbeatTimer.Stop()
-	if remote.id != 0 && n.IsMainNode() {
-		nodeID := remote.id
+	var nodeID int
+	n.remoteNodesMu.Lock()
+	if remote.id != 0 && n.remoteNodes[remote.id] == remote {
+		nodeID = remote.id
+		delete(n.remoteNodes, nodeID)
+	}
+	n.remoteNodesMu.Unlock()
+	if nodeID != 0 && n.IsMainNode() {
 		n.controlLoop.Post(func() {
 			keys := n.serviceKeysForNode(nodeID)
 			n.registry.UnregisterNode(nodeID)
@@ -1243,19 +1247,34 @@ func (n *Node) removeRemoteNode(session xtnetNet.ISession, closeSession bool) {
 }
 
 func (n *Node) registeredRemoteNode(session xtnetNet.ISession) (*RemoteNode, error) {
+	remote := remoteNodeFromSession(session)
+	if remote == nil {
+		return nil, fmt.Errorf("%w: rpc session is not registered", ErrNodeNotFound)
+	}
 	n.remoteNodesMu.RLock()
-	remote := n.remoteNodes[session]
+	registered := remote.active.Load() && remote.id != 0 && n.remoteNodes[remote.id] == remote
 	n.remoteNodesMu.RUnlock()
-	if remote == nil || remote.id == 0 {
+	if !registered {
 		return nil, fmt.Errorf("%w: rpc session is not registered", ErrNodeNotFound)
 	}
 	return remote, nil
 }
 
 func (n *Node) remoteNodeIsCurrent(session xtnetNet.ISession, remote *RemoteNode) bool {
+	if remote == nil || remote.session != session {
+		return false
+	}
 	n.remoteNodesMu.RLock()
 	defer n.remoteNodesMu.RUnlock()
-	return n.remoteNodes[session] == remote && remote != nil && remote.id != 0
+	return remote.active.Load() && remote.id != 0 && n.remoteNodes[remote.id] == remote
+}
+
+func remoteNodeFromSession(session xtnetNet.ISession) *RemoteNode {
+	if session == nil {
+		return nil
+	}
+	remote, _ := session.GetUserData().(*RemoteNode)
+	return remote
 }
 
 func rpcInvalidMessage(err error) error {
@@ -1316,10 +1335,8 @@ func (n *Node) broadcastRouteInvalidation(keys ...ServiceKey) {
 	}
 	n.remoteNodesMu.RLock()
 	sessions := make([]xtnetNet.ISession, 0, len(n.remoteNodes))
-	for session, remote := range n.remoteNodes {
-		if remote.id != 0 {
-			sessions = append(sessions, session)
-		}
+	for _, remote := range n.remoteNodes {
+		sessions = append(sessions, remote.session)
 	}
 	n.remoteNodesMu.RUnlock()
 
@@ -1421,9 +1438,10 @@ func (n *Node) closeNetwork() {
 	for _, remote := range n.remoteNodes {
 		remoteNodes = append(remoteNodes, remote)
 	}
-	n.remoteNodes = make(map[xtnetNet.ISession]*RemoteNode)
+	n.remoteNodes = make(map[int]*RemoteNode)
 	n.remoteNodesMu.Unlock()
 	for _, remote := range remoteNodes {
+		remote.active.Store(false)
 		remote.heartbeatTimer.Stop()
 		remote.session.Close(false)
 	}

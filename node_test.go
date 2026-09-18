@@ -552,6 +552,12 @@ func TestDuplicateRegistrationsKeepOriginalNodeAndService(t *testing.T) {
 	if got, found := mainNode.RegisteredService(location.Key()); !found || got != location {
 		t.Fatalf("registered service after duplicate = %+v, %v; want original %+v", got, found, location)
 	}
+	mainNode.remoteNodesMu.RLock()
+	originalRemote := mainNode.remoteNodes[serviceNode.ID()]
+	mainNode.remoteNodesMu.RUnlock()
+	if originalRemote == nil {
+		t.Fatal("original remote node registration was not found")
+	}
 
 	duplicateClient, err := newRPCClient(serviceNode, mainNode.ID(), mainNode.ListenAddr())
 	if err != nil {
@@ -566,15 +572,14 @@ func TestDuplicateRegistrationsKeepOriginalNodeAndService(t *testing.T) {
 	}
 
 	mainNode.remoteNodesMu.RLock()
-	registeredCount := 0
-	for _, remote := range mainNode.remoteNodes {
-		if remote.id == serviceNode.ID() {
-			registeredCount++
-		}
-	}
+	registeredCount := len(mainNode.remoteNodes)
+	registeredRemote := mainNode.remoteNodes[serviceNode.ID()]
 	mainNode.remoteNodesMu.RUnlock()
 	if registeredCount != 1 {
 		t.Fatalf("registered sessions for node %d = %d, want 1", serviceNode.ID(), registeredCount)
+	}
+	if registeredRemote != originalRemote {
+		t.Fatal("duplicate connection replaced the registered remote node")
 	}
 }
 
@@ -626,6 +631,13 @@ func TestNodeCachesRemoteServiceLocation(t *testing.T) {
 		Target: &rpcpb.ServiceKey{Name: "center", Id: 1},
 	}, &rpcpb.LookupResponse{}); !errors.Is(err, ErrNodeNotFound) {
 		t.Fatalf("lookup from unregistered session error = %v, want ErrNodeNotFound", err)
+	}
+	mainNode.remoteNodesMu.RLock()
+	registeredRemoteCount := len(mainNode.remoteNodes)
+	_, senderRegistered := mainNode.remoteNodes[senderNode.ID()]
+	mainNode.remoteNodesMu.RUnlock()
+	if registeredRemoteCount != 1 || !senderRegistered {
+		t.Fatalf("remote nodes include an unregistered connection: count=%d sender_registered=%v", registeredRemoteCount, senderRegistered)
 	}
 	unregisteredClient.Close()
 
