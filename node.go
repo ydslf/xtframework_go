@@ -161,8 +161,7 @@ type Node struct {
 	routeCache     *serviceRouteCache //非主node保存的非本地service地址
 	clientCreateMu sync.Mutex
 
-	mainRecoveryMu       sync.Mutex
-	mainRecoveryRunning  bool
+	mainRecoveryTrigger  chan struct{}
 	mainRecoveryWG       sync.WaitGroup
 	mainRecoveryStop     chan struct{}
 	mainRecoveryStopOnce sync.Once
@@ -269,6 +268,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		heartbeatTimeout:       options.heartbeatTimeout,
 		remoteHeartbeatTimeout: options.heartbeatInterval + options.heartbeatTimeout + options.heartbeatInterval/3,
 		routeCache:             newServiceRouteCache(options.routeCacheTTL),
+		mainRecoveryTrigger:    make(chan struct{}, 1),
 		mainRecoveryStop:       make(chan struct{}),
 		errorHandler:           options.errorHandler,
 		localServices:          make(map[ServiceKey]*serviceRuntime),
@@ -366,6 +366,7 @@ func (n *Node) Start() error {
 		return ErrNodeRunning
 	}
 	n.startControlLoop()
+	n.startMainRecoveryLoop()
 
 	if err := n.startRPCServer(); err != nil {
 		n.rollbackStart()

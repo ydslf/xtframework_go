@@ -10,41 +10,38 @@ const (
 	mainRecoveryMaxDelay     = 3 * time.Second
 )
 
-// startMainRecovery 最多启动一个后台恢复协程。
-// 非主 Node 在运行期间失去主 Node 连接时调用。
-func (n *Node) startMainRecovery() {
-	if n.IsMainNode() || n.state.Load() != nodeStateRunning {
+func (n *Node) startMainRecoveryLoop() {
+	if n.IsMainNode() {
 		return
 	}
-
-	n.mainRecoveryMu.Lock()
-	defer n.mainRecoveryMu.Unlock()
-	if n.mainRecoveryRunning || n.state.Load() != nodeStateRunning || n.mainRecoveryStopped() {
-		return
-	}
-	n.mainRecoveryRunning = true
 	n.mainRecoveryWG.Add(1)
-	go n.recoverMainNode()
+	go n.runMainRecoveryLoop()
+}
+
+func (n *Node) runMainRecoveryLoop() {
+	defer n.mainRecoveryWG.Done()
+	for {
+		select {
+		case <-n.mainRecoveryTrigger:
+			n.recoverMainNode()
+		case <-n.mainRecoveryStop:
+			return
+		}
+	}
+}
+
+// startMainRecovery 非阻塞地通知恢复循环，并自动合并重复通知。
+func (n *Node) startMainRecovery() {
+	if n.IsMainNode() || n.state.Load() != nodeStateRunning || n.mainRecoveryStopped() {
+		return
+	}
+	select {
+	case n.mainRecoveryTrigger <- struct{}{}:
+	default:
+	}
 }
 
 func (n *Node) recoverMainNode() {
-	recovered := false
-	defer func() {
-		n.mainRecoveryMu.Lock()
-		n.mainRecoveryRunning = false
-		n.mainRecoveryMu.Unlock()
-		n.mainRecoveryWG.Done()
-		if !recovered || n.state.Load() != nodeStateRunning || n.mainRecoveryStopped() {
-			return
-		}
-		n.clientsMu.RLock()
-		client := n.rpcClients[n.mainNodeID]
-		connected := client != nil && client.Connected()
-		n.clientsMu.RUnlock()
-		if !connected {
-			n.startMainRecovery()
-		}
-	}()
 	mainConfig, exists := n.config.Node(n.mainNodeID)
 	if !exists {
 		n.report(fmt.Errorf("%w: main node %d", ErrNodeNotFound, n.mainNodeID))
@@ -57,12 +54,7 @@ func (n *Node) recoverMainNode() {
 			select {
 			case <-timer.C:
 			case <-n.mainRecoveryStop:
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
+				timer.Stop()
 				return
 			}
 		}
@@ -98,7 +90,6 @@ func (n *Node) recoverMainNode() {
 		n.clientCreateMu.Unlock()
 
 		if err == nil {
-			recovered = true
 			n.logger.LogDebug("restored connection and local state on main node %d", n.mainNodeID)
 			return
 		}
@@ -146,9 +137,6 @@ func (n *Node) recoverMainNodeClient(mainConfig NodeConfig) (*RPCClient, error) 
 
 func (n *Node) stopMainRecovery() {
 	n.mainRecoveryStopOnce.Do(func() { close(n.mainRecoveryStop) })
-	// 与可能发生的恢复协程创建串行化，避免 Wait 与 Add 并发执行。
-	n.mainRecoveryMu.Lock()
-	n.mainRecoveryMu.Unlock()
 	n.mainRecoveryWG.Wait()
 }
 
