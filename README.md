@@ -131,6 +131,11 @@ func (s *Gateway) HandleServiceOffline(service xtframework.ServiceKey) {
 订阅关系，但会重新发送当前完整快照。订阅者注销或所在 Node 断开时，主 Node
 会自动清理它的订阅关系。
 
+非主 Node 与主 Node 的连接断开后，会在后台按退避策略自动重连。重连成功后
+框架会重新注册仍在运行的本地 Service、重放期望订阅，并重新发送完整快照。
+断线期间的增量事件不会补发，业务层应把重连后的 Snapshot 当作权威状态，
+用它整体替换此前保存的同名 Service 列表。
+
 ## 日志
 
 框架约定一个进程只运行一个 Node。每个 Node 从自己的 `logger` 配置创建
@@ -173,4 +178,5 @@ go test ./...
 go test -race ./...
 ```
 
-当前版本的 Node 间数据包受 xtnet TCP 默认最大包长限制（64 KiB）。注册表仅保存在主 Node 内存中；主 Node 重启后，各 Node 需要重新启动以完成重新注册。
+当前版本的 Node 间数据包受 xtnet TCP 默认最大包长限制（64 KiB）。注册表仅
+保存在主 Node 内存中；主 Node 重启后，其他 Node 会自动重连并恢复注册及订阅状态。

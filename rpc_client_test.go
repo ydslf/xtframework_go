@@ -116,6 +116,10 @@ func TestRemoteNodeHeartbeatTimeoutRemovesNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This test exercises server-side heartbeat cleanup in isolation. Disable
+	// automatic main-node recovery before replacing the managed connection with
+	// a client that intentionally does not send heartbeats.
+	clientNode.stopMainRecovery()
 	originalClient.Close()
 	waitUntil(t, func() bool {
 		mainNode.remoteNodesMu.RLock()

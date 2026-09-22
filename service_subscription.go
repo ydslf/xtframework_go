@@ -126,6 +126,26 @@ func (n *Node) subscribeService(subscriber ServiceKey, serviceName string) error
 }
 
 func (n *Node) subscribeRuntime(subscriber ServiceKey, runtime *serviceRuntime) error {
+	serviceNames := runtimeSubscriptionNames(runtime)
+	for _, serviceName := range serviceNames {
+		if err := n.requestServiceSubscription(subscriber, serviceName); err != nil {
+			return fmt.Errorf("%s: %w", serviceName, err)
+		}
+	}
+	return nil
+}
+
+func (n *Node) subscribeRuntimeWithClient(client *RPCClient, subscriber ServiceKey, runtime *serviceRuntime) error {
+	serviceNames := runtimeSubscriptionNames(runtime)
+	for _, serviceName := range serviceNames {
+		if err := n.requestServiceSubscriptionWithClient(client, subscriber, serviceName); err != nil {
+			return fmt.Errorf("%s: %w", serviceName, err)
+		}
+	}
+	return nil
+}
+
+func runtimeSubscriptionNames(runtime *serviceRuntime) []string {
 	runtime.subscriptionsMu.Lock()
 	serviceNames := make([]string, 0, len(runtime.subscriptions))
 	for serviceName := range runtime.subscriptions {
@@ -133,12 +153,7 @@ func (n *Node) subscribeRuntime(subscriber ServiceKey, runtime *serviceRuntime) 
 	}
 	runtime.subscriptionsMu.Unlock()
 	sort.Strings(serviceNames)
-	for _, serviceName := range serviceNames {
-		if err := n.requestServiceSubscription(subscriber, serviceName); err != nil {
-			return fmt.Errorf("%s: %w", serviceName, err)
-		}
-	}
-	return nil
+	return serviceNames
 }
 
 func (n *Node) requestServiceSubscription(subscriber ServiceKey, serviceName string) error {
@@ -156,6 +171,10 @@ func (n *Node) requestServiceSubscription(subscriber ServiceKey, serviceName str
 	if err != nil {
 		return err
 	}
+	return n.requestServiceSubscriptionWithClient(client, subscriber, serviceName)
+}
+
+func (n *Node) requestServiceSubscriptionWithClient(client *RPCClient, subscriber ServiceKey, serviceName string) error {
 	return client.requestSync(n.connectTimeout, opSubscribe, &rpcpb.SubscribeRequest{
 		Subscriber:  serviceKeyToProto(subscriber),
 		ServiceName: serviceName,

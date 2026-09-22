@@ -244,6 +244,7 @@ func (c *RPCClient) markDisconnected() {
 	c.node.removeRPCClient(c.nodeID, c)
 	if c.nodeID == c.node.mainNodeID {
 		c.node.routeCache.invalidateAll()
+		c.node.startMainRecovery()
 	}
 }
 

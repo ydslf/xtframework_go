@@ -156,9 +156,16 @@ type Node struct {
 	controlTimeWheel *xttimer.TimeWheel
 	controlStarted   bool
 
-	clientsMu  sync.RWMutex
-	rpcClients map[int]*RPCClient //所有node保存的连接远端node的RPCClient
-	routeCache *serviceRouteCache //非主node保存的非本地service地址
+	clientsMu      sync.RWMutex
+	rpcClients     map[int]*RPCClient //所有node保存的连接远端node的RPCClient
+	routeCache     *serviceRouteCache //非主node保存的非本地service地址
+	clientCreateMu sync.Mutex
+
+	mainRecoveryMu       sync.Mutex
+	mainRecoveryRunning  bool
+	mainRecoveryWG       sync.WaitGroup
+	mainRecoveryStop     chan struct{}
+	mainRecoveryStopOnce sync.Once
 
 	shutdownMutex sync.Mutex
 }
@@ -262,6 +269,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		heartbeatTimeout:       options.heartbeatTimeout,
 		remoteHeartbeatTimeout: options.heartbeatInterval + options.heartbeatTimeout + options.heartbeatInterval/3,
 		routeCache:             newServiceRouteCache(options.routeCacheTTL),
+		mainRecoveryStop:       make(chan struct{}),
 		errorHandler:           options.errorHandler,
 		localServices:          make(map[ServiceKey]*serviceRuntime),
 		remoteNodes:            make(map[int]*RemoteNode),
@@ -493,6 +501,16 @@ func (n *Node) registerService(key ServiceKey) error {
 	client, err := n.mainClient()
 	if err != nil {
 		return err
+	}
+	return n.registerServiceWithClient(client, key)
+}
+
+func (n *Node) registerServiceWithClient(client *RPCClient, key ServiceKey) error {
+	location := ServiceLocation{
+		ServiceName: key.Name,
+		ServiceID:   key.ID,
+		NodeID:      n.id,
+		NodeAddr:    n.nodeConfig.ListenAddr,
 	}
 	request := &rpcpb.RegisterRequest{
 		Location: serviceLocationToProto(location),
@@ -836,27 +854,65 @@ func (n *Node) mainClient() (*RPCClient, error) {
 	return n.getRPCClient(mainConfig.ID, mainConfig.ListenAddr)
 }
 
+func (n *Node) cachedRPCClient(nodeID int, addr string) *RPCClient {
+	n.clientsMu.RLock()
+	defer n.clientsMu.RUnlock()
+	client := n.rpcClients[nodeID]
+	if client != nil && client.Connected() && client.Addr() == addr {
+		return client
+	}
+	return nil
+}
+
 func (n *Node) getRPCClient(nodeID int, addr string) (*RPCClient, error) {
 	if nodeID == n.id {
 		return nil, fmt.Errorf("cannot create an rpc client to local node %d", nodeID)
 	}
-	n.clientsMu.RLock()
-	current := n.rpcClients[nodeID]
-	if current != nil && current.Connected() && current.Addr() == addr {
-		n.clientsMu.RUnlock()
-		return current, nil
+	if client := n.cachedRPCClient(nodeID, addr); client != nil {
+		return client, nil
 	}
-	n.clientsMu.RUnlock()
 
+	//与主node的连接只能在node初始化的时候创建
+	if nodeID == n.mainNodeID && !n.IsMainNode() && n.state.Load() == nodeStateRunning {
+		return nil, ErrRPCDisconnected
+	}
+
+	n.clientCreateMu.Lock()
+	defer n.clientCreateMu.Unlock()
+
+	var stale *RPCClient
 	n.clientsMu.Lock()
-	defer n.clientsMu.Unlock()
-	if current = n.rpcClients[nodeID]; current != nil {
+	if current := n.rpcClients[nodeID]; current != nil {
 		if current.Connected() && current.Addr() == addr {
+			n.clientsMu.Unlock()
 			return current, nil
 		}
-		current.closeTransport()
+		stale = current
 		delete(n.rpcClients, nodeID)
 	}
+	n.clientsMu.Unlock()
+	if stale != nil {
+		stale.closeTransport()
+	}
+
+	client, err := n.connectRPCClient(nodeID, addr)
+	if err != nil {
+		return nil, err
+	}
+	n.clientsMu.Lock()
+	if !client.Connected() {
+		n.clientsMu.Unlock()
+		client.closeTransport()
+		return nil, ErrRPCDisconnected
+	}
+	n.rpcClients[nodeID] = client
+	n.clientsMu.Unlock()
+	client.startHeartbeat()
+	return client, nil
+}
+
+// connectRPCClient 创建连接并向远端注册当前 Node，但不会缓存连接或启动心跳。
+func (n *Node) connectRPCClient(nodeID int, addr string) (*RPCClient, error) {
 	client, err := newRPCClient(n, nodeID, addr)
 	if err != nil {
 		return nil, err
@@ -868,8 +924,6 @@ func (n *Node) getRPCClient(nodeID int, addr string) (*RPCClient, error) {
 		client.closeTransport()
 		return nil, fmt.Errorf("register node %d with node %d: %w", n.id, nodeID, err)
 	}
-	n.rpcClients[nodeID] = client
-	client.startHeartbeat()
 	return client, nil
 }
 
@@ -1378,6 +1432,7 @@ func (n *Node) Stop() error {
 		}
 		return ErrNodeStopped
 	}
+	n.stopMainRecovery()
 
 	var errs []error
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
@@ -1422,6 +1477,9 @@ func (n *Node) stopService(runtime *serviceRuntime) error {
 }
 
 func (n *Node) closeNetwork() {
+	n.clientCreateMu.Lock()
+	defer n.clientCreateMu.Unlock()
+
 	n.clientsMu.Lock()
 	clients := make([]*RPCClient, 0, len(n.rpcClients))
 	for _, client := range n.rpcClients {
@@ -1452,6 +1510,7 @@ func (n *Node) closeNetwork() {
 }
 
 func (n *Node) rollbackStart() {
+	n.stopMainRecovery()
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
 		runtime := n.localServices[n.serviceOrder[i]]
 		if runtime.registered.Load() {
