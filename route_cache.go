@@ -24,15 +24,17 @@ type routeLookupCall struct {
 type serviceRouteCache struct {
 	mu        sync.RWMutex
 	ttl       time.Duration
+	enabled   bool
 	entries   map[ServiceKey]routeCacheEntry
 	lookups   map[ServiceKey]*routeLookupCall
 	epoch     uint64
 	revisions map[ServiceKey]uint64
 }
 
-func newServiceRouteCache(ttl time.Duration) *serviceRouteCache {
+func newServiceRouteCache(ttl time.Duration, enabled bool) *serviceRouteCache {
 	return &serviceRouteCache{
 		ttl:       ttl,
+		enabled:   enabled,
 		entries:   make(map[ServiceKey]routeCacheEntry),
 		lookups:   make(map[ServiceKey]*routeLookupCall),
 		revisions: make(map[ServiceKey]uint64),
@@ -44,7 +46,7 @@ func (c *serviceRouteCache) lookup(key ServiceKey, load func() (ServiceLocation,
 		now := time.Now()
 		c.mu.RLock()
 		entry, exists := c.entries[key]
-		if exists && now.Before(entry.expiresAt) {
+		if exists && (entry.expiresAt.IsZero() || now.Before(entry.expiresAt)) {
 			c.mu.RUnlock()
 			return entry.location, nil
 		}
@@ -53,7 +55,7 @@ func (c *serviceRouteCache) lookup(key ServiceKey, load func() (ServiceLocation,
 		c.mu.Lock()
 		if entry, exists = c.entries[key]; exists {
 			now = time.Now()
-			if now.Before(entry.expiresAt) {
+			if entry.expiresAt.IsZero() || now.Before(entry.expiresAt) {
 				c.mu.Unlock()
 				return entry.location, nil
 			}
@@ -84,10 +86,14 @@ func (c *serviceRouteCache) lookup(key ServiceKey, load func() (ServiceLocation,
 		call.location = location
 		call.err = err
 		call.stale = c.epoch != epoch || c.revisions[key] != revision
-		if !call.stale && err == nil && c.ttl > 0 {
+		if !call.stale && err == nil && c.enabled {
+			expiresAt := time.Time{}
+			if c.ttl > 0 {
+				expiresAt = time.Now().Add(c.ttl)
+			}
 			c.entries[key] = routeCacheEntry{
 				location:  location,
-				expiresAt: time.Now().Add(c.ttl),
+				expiresAt: expiresAt,
 			}
 		}
 		if c.lookups[key] == call {

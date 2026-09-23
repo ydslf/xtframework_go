@@ -31,7 +31,7 @@ const (
 )
 
 const (
-	defaultRouteCacheTTL      = 30 * time.Minute
+	defaultRouteCacheTTL      = time.Hour
 	defaultServiceCallTimeout = 3 * time.Second
 	defaultHeartbeatInterval  = 3 * time.Second
 	defaultHeartbeatTimeout   = 2 * time.Second
@@ -45,6 +45,7 @@ type nodeOptions struct {
 	logger                *xtlog.Logger
 	connectTimeout        time.Duration
 	routeCacheTTL         time.Duration
+	routeCacheEnabled     bool
 	serviceCallTimeout    time.Duration
 	serviceCallTimeoutSet bool
 	heartbeatInterval     time.Duration
@@ -90,10 +91,16 @@ func WithServiceCallTimeout(timeout time.Duration) NodeOption {
 }
 
 // WithRouteCacheTTL 设置非主节点的 Service 路由缓存有效期。设置为 0
-// 可以禁用路由缓存；默认有效期为 10 分钟。主节点会在路由变化时主动
+// 表示缓存永不过期；默认有效期为 1 小时。主节点会在路由变化时主动
 // 通知其他节点使对应缓存失效，TTL 用作通知丢失时的兜底。
 func WithRouteCacheTTL(ttl time.Duration) NodeOption {
 	return func(options *nodeOptions) { options.routeCacheTTL = ttl }
+}
+
+// WithRouteCacheDisabled 禁用非主节点的 Service 路由缓存。并发的相同
+// Service 查询仍会合并为一次主节点查询。
+func WithRouteCacheDisabled() NodeOption {
+	return func(options *nodeOptions) { options.routeCacheEnabled = false }
 }
 
 func WithErrorHandler(handler func(error)) NodeOption {
@@ -183,6 +190,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		registry:           NewMemoryRegistry(),
 		connectTimeout:     5 * time.Second,
 		routeCacheTTL:      defaultRouteCacheTTL,
+		routeCacheEnabled:  true,
 		serviceCallTimeout: defaultServiceCallTimeout,
 		heartbeatInterval:  defaultHeartbeatInterval,
 		heartbeatTimeout:   defaultHeartbeatTimeout,
@@ -267,7 +275,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		heartbeatInterval:      options.heartbeatInterval,
 		heartbeatTimeout:       options.heartbeatTimeout,
 		remoteHeartbeatTimeout: options.heartbeatInterval + options.heartbeatTimeout + options.heartbeatInterval/3,
-		routeCache:             newServiceRouteCache(options.routeCacheTTL),
+		routeCache:             newServiceRouteCache(options.routeCacheTTL, options.routeCacheEnabled),
 		mainRecoveryTrigger:    make(chan struct{}, 1),
 		mainRecoveryStop:       make(chan struct{}),
 		errorHandler:           options.errorHandler,

@@ -425,6 +425,38 @@ func TestNewNodeRequiresFactory(t *testing.T) {
 	}
 }
 
+func TestRouteCacheConfiguration(t *testing.T) {
+	cfg := &Config{
+		MainNode: 1,
+		Nodes:    []NodeConfig{{ID: 1, ListenAddr: freeAddress(t)}},
+	}
+	logger := newTestXTLogger(t)
+
+	defaultNode, err := NewNode(cfg, 1, WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !defaultNode.routeCache.enabled || defaultNode.routeCache.ttl != time.Hour {
+		t.Fatalf("default route cache = enabled:%v ttl:%s, want enabled:true ttl:1h", defaultNode.routeCache.enabled, defaultNode.routeCache.ttl)
+	}
+
+	permanentNode, err := NewNode(cfg, 1, WithLogger(logger), WithRouteCacheTTL(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !permanentNode.routeCache.enabled || permanentNode.routeCache.ttl != 0 {
+		t.Fatalf("permanent route cache = enabled:%v ttl:%s, want enabled:true ttl:0s", permanentNode.routeCache.enabled, permanentNode.routeCache.ttl)
+	}
+
+	disabledNode, err := NewNode(cfg, 1, WithLogger(logger), WithRouteCacheDisabled())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabledNode.routeCache.enabled {
+		t.Fatal("WithRouteCacheDisabled left the route cache enabled")
+	}
+}
+
 func TestServiceCallTimeoutConfiguration(t *testing.T) {
 	cfg := &Config{
 		MainNode: 1,
