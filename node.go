@@ -578,7 +578,10 @@ func (n *Node) send2Service(source, target ServiceKey, messageID serviceMessageI
 		n.routeCache.invalidate(target)
 		return err
 	}
-	err = client.send(opDeliver, newDeliverRequest(source, target, messageID, payload))
+	requestProtocol := acquireDeliverSendRequest()
+	initializeDeliverRequest(requestProtocol, source, target, messageID, payload)
+	err = client.send(opDeliver, requestProtocol)
+	releaseDeliverSendRequest(requestProtocol)
 	if err != nil {
 		n.routeCache.invalidate(target)
 	}
@@ -647,8 +650,11 @@ func (n *Node) callService(source, target ServiceKey, messageID serviceMessageID
 		n.routeCache.invalidate(target)
 		return err
 	}
-	responseProtocol := &rpcpb.DeliverResponse{}
-	err = client.requestAsync(n.serviceCallTimeout, opDeliver, newDeliverRequest(source, target, messageID, payload), responseProtocol, func(requestErr error) {
+	requestProtocol := acquireDeliverSendRequest()
+	initializeDeliverRequest(requestProtocol, source, target, messageID, payload)
+	responseProtocol := acquireDeliverResponse()
+	err = client.requestAsync(n.serviceCallTimeout, opDeliver, requestProtocol, responseProtocol, func(requestErr error) {
+		defer releaseDeliverResponse(responseProtocol)
 		if requestErr != nil && (errors.Is(requestErr, ErrServiceNotFound) || errors.Is(requestErr, ErrRPCDisconnected)) {
 			n.routeCache.invalidate(target)
 		}
@@ -658,7 +664,9 @@ func (n *Node) callService(source, target ServiceKey, messageID serviceMessageID
 		}
 		callback(responseProtocol.Payload, nil)
 	})
+	releaseDeliverSendRequest(requestProtocol)
 	if err != nil {
+		releaseDeliverResponse(responseProtocol)
 		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
 			n.routeCache.invalidate(target)
 		}
@@ -716,29 +724,21 @@ func (n *Node) callServiceSync(source, target ServiceKey, messageID serviceMessa
 		n.routeCache.invalidate(target)
 		return nil, err
 	}
-	responseProtocol := &rpcpb.DeliverResponse{}
-	err = client.requestSync(n.serviceCallTimeout, opDeliver, newDeliverRequest(source, target, messageID, payload), responseProtocol)
+	requestProtocol := acquireDeliverSendRequest()
+	initializeDeliverRequest(requestProtocol, source, target, messageID, payload)
+	responseProtocol := acquireDeliverResponse()
+	err = client.requestSync(n.serviceCallTimeout, opDeliver, requestProtocol, responseProtocol)
+	releaseDeliverSendRequest(requestProtocol)
 	if err != nil {
+		releaseDeliverResponse(responseProtocol)
 		if errors.Is(err, ErrServiceNotFound) || errors.Is(err, ErrRPCDisconnected) {
 			n.routeCache.invalidate(target)
 		}
 		return nil, err
 	}
-	return responseProtocol.Payload, nil
-}
-
-func newDeliverRequest(source, target ServiceKey, messageID serviceMessageID, payload []byte) *rpcpb.DeliverRequest {
-	request := &rpcpb.DeliverRequest{
-		Source:  serviceKeyToProto(source),
-		Target:  serviceKeyToProto(target),
-		Payload: payload,
-	}
-	if messageID.kind == serviceMessageIDString {
-		request.StringMessageId = messageID.text
-	} else {
-		request.MessageId = messageID.number
-	}
-	return request
+	responsePayload := responseProtocol.Payload
+	releaseDeliverResponse(responseProtocol)
+	return responsePayload, nil
 }
 
 func (n *Node) dispatchLocalDirect(source, target ServiceKey, messageID serviceMessageID, payload []byte) error {
@@ -956,19 +956,24 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 	}
 	switch op {
 	case opDeliver:
-		var request rpcpb.DeliverRequest
-		if err := decodeOperationPayload(payload, &request); err != nil {
+		request := acquireDeliverReceiveRequest()
+		if err := decodeOperationPayload(payload, request); err != nil {
+			releaseDeliverReceiveRequest(request)
 			n.report(rpcInvalidMessage(err))
 			return
 		}
-		source, target, messageID, err := decodeDeliverRequest(&request)
+		source, target, messageID, err := decodeDeliverRequest(request)
 		if err != nil {
+			releaseDeliverReceiveRequest(request)
 			n.report(rpcInvalidMessage(err))
 			return
 		}
 		if err := n.dispatchLocalDirect(source, target, messageID, request.Payload); err != nil {
+			releaseDeliverReceiveRequest(request)
 			n.report(err)
+			return
 		}
+		releaseDeliverReceiveRequest(request)
 	default:
 		n.report(fmt.Errorf("unsupported direct rpc operation %d", op))
 	}
@@ -1118,13 +1123,15 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			Location: serviceLocationToProto(location),
 		})
 	case opDeliver:
-		var request rpcpb.DeliverRequest
-		if decodeErr := decodeOperationPayload(payload, &request); decodeErr != nil {
+		request := acquireDeliverReceiveRequest()
+		if decodeErr := decodeOperationPayload(payload, request); decodeErr != nil {
+			releaseDeliverReceiveRequest(request)
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		source, target, messageID, decodeErr := decodeDeliverRequest(&request)
+		source, target, messageID, decodeErr := decodeDeliverRequest(request)
 		if decodeErr != nil {
+			releaseDeliverReceiveRequest(request)
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
@@ -1133,10 +1140,13 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
 			}
-			return n.respondRPC(session, contextID, &rpcpb.DeliverResponse{
-				Payload: responsePayload,
-			})
+			response := acquireDeliverResponse()
+			response.Payload = responsePayload
+			respondErr := n.respondRPC(session, contextID, response)
+			releaseDeliverResponse(response)
+			return respondErr
 		})
+		releaseDeliverReceiveRequest(request)
 		if err != nil {
 			n.respondRPCError(session, contextID, err)
 		}

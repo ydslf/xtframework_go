@@ -2,6 +2,7 @@ package xtframework
 
 import (
 	"fmt"
+	"sync"
 
 	"xtframework/internal/rpcpb"
 	"xtnet/net/packet"
@@ -27,6 +28,25 @@ const (
 type operationProtocol interface {
 	proto.Message
 }
+
+var (
+	// 发送和接收请求使用独立对象池，因为 proto.Unmarshal 会重置根消息，
+	// 从而丢弃发送侧需要复用的嵌套 ServiceKey 对象。
+	deliverSendRequestPool = sync.Pool{
+		New: func() any {
+			return &rpcpb.DeliverRequest{
+				Source: &rpcpb.ServiceKey{},
+				Target: &rpcpb.ServiceKey{},
+			}
+		},
+	}
+	deliverReceiveRequestPool = sync.Pool{
+		New: func() any { return &rpcpb.DeliverRequest{} },
+	}
+	deliverResponsePool = sync.Pool{
+		New: func() any { return &rpcpb.DeliverResponse{} },
+	}
+)
 
 const maxRPCStringSize = 1<<15 - 1
 
@@ -62,6 +82,68 @@ func decodeOperationPayload(payLoad []byte, message operationProtocol) error {
 		return fmt.Errorf("decode rpc payload: %w", err)
 	}
 	return nil
+}
+
+func acquireDeliverSendRequest() *rpcpb.DeliverRequest {
+	return deliverSendRequestPool.Get().(*rpcpb.DeliverRequest)
+}
+
+func initializeDeliverRequest(request *rpcpb.DeliverRequest, source, target ServiceKey, messageID serviceMessageID, payload []byte) {
+	request.Source.Name = source.Name
+	request.Source.Id = int64(source.ID)
+	request.Target.Name = target.Name
+	request.Target.Id = int64(target.ID)
+	request.Payload = payload
+	if messageID.kind == serviceMessageIDString {
+		request.StringMessageId = messageID.text
+	} else {
+		request.MessageId = messageID.number
+	}
+}
+
+func releaseDeliverSendRequest(request *rpcpb.DeliverRequest) {
+	if request == nil {
+		return
+	}
+	source, target := request.Source, request.Target
+	proto.Reset(request)
+	if source == nil {
+		source = &rpcpb.ServiceKey{}
+	} else {
+		proto.Reset(source)
+	}
+	if target == nil {
+		target = &rpcpb.ServiceKey{}
+	} else {
+		proto.Reset(target)
+	}
+	request.Source = source
+	request.Target = target
+	deliverSendRequestPool.Put(request)
+}
+
+func acquireDeliverReceiveRequest() *rpcpb.DeliverRequest {
+	return deliverReceiveRequestPool.Get().(*rpcpb.DeliverRequest)
+}
+
+func releaseDeliverReceiveRequest(request *rpcpb.DeliverRequest) {
+	if request == nil {
+		return
+	}
+	proto.Reset(request)
+	deliverReceiveRequestPool.Put(request)
+}
+
+func acquireDeliverResponse() *rpcpb.DeliverResponse {
+	return deliverResponsePool.Get().(*rpcpb.DeliverResponse)
+}
+
+func releaseDeliverResponse(response *rpcpb.DeliverResponse) {
+	if response == nil {
+		return
+	}
+	proto.Reset(response)
+	deliverResponsePool.Put(response)
 }
 
 func encodeResult(code, errMessage string, message operationProtocol) (*packet.WritePacket, error) {

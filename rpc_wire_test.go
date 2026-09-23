@@ -1,6 +1,7 @@
 package xtframework
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -213,6 +214,86 @@ func TestDecodeDeliverRequestValidatesMessageID(t *testing.T) {
 	if _, _, _, err := decodeDeliverRequest(request); !errors.Is(err, ErrInvalidMessage) {
 		t.Fatalf("invalid UTF-8 message id error = %v", err)
 	}
+}
+
+func TestDeliverProtocolPoolsResetStateAndPreserveReturnedPayloads(t *testing.T) {
+	source := ServiceKey{Name: "gateway", ID: 2}
+	target := ServiceKey{Name: "room", ID: 7}
+	requestPayload := []byte("request")
+
+	request := acquireDeliverSendRequest()
+	initializeDeliverRequest(request, source, target, stringServiceMessageID("player.join"), requestPayload)
+	encoded, err := proto.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseDeliverSendRequest(request)
+
+	decoded := acquireDeliverReceiveRequest()
+	if err := decodeOperationPayload(encoded, decoded); err != nil {
+		releaseDeliverReceiveRequest(decoded)
+		t.Fatal(err)
+	}
+	if got, err := serviceKeyFromProto(decoded.Source); err != nil || got != source {
+		releaseDeliverReceiveRequest(decoded)
+		t.Fatalf("decoded source = %v, %v", got, err)
+	}
+	if got, err := serviceKeyFromProto(decoded.Target); err != nil || got != target {
+		releaseDeliverReceiveRequest(decoded)
+		t.Fatalf("decoded target = %v, %v", got, err)
+	}
+	if decoded.StringMessageId != "player.join" || !bytes.Equal(decoded.Payload, requestPayload) {
+		t.Fatalf("decoded request = %+v", decoded)
+	}
+	retainedRequestPayload := decoded.Payload
+	releaseDeliverReceiveRequest(decoded)
+	if !bytes.Equal(retainedRequestPayload, requestPayload) {
+		t.Fatalf("request payload changed after pool release: %q", retainedRequestPayload)
+	}
+
+	cleanRequest := acquireDeliverSendRequest()
+	if cleanRequest.Source == nil || cleanRequest.Target == nil {
+		releaseDeliverSendRequest(cleanRequest)
+		t.Fatal("pooled request lost reusable service keys")
+	}
+	if cleanRequest.Source.Name != "" || cleanRequest.Source.Id != 0 ||
+		cleanRequest.Target.Name != "" || cleanRequest.Target.Id != 0 ||
+		cleanRequest.MessageId != 0 || cleanRequest.StringMessageId != "" || cleanRequest.Payload != nil {
+		t.Fatalf("pooled request retained state: %+v", cleanRequest)
+	}
+	releaseDeliverSendRequest(cleanRequest)
+
+	missingSourceWire, err := proto.Marshal(&rpcpb.DeliverRequest{
+		Target:    &rpcpb.ServiceKey{Name: "room", Id: 7},
+		MessageId: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingSource := acquireDeliverReceiveRequest()
+	if err := decodeOperationPayload(missingSourceWire, missingSource); err != nil {
+		releaseDeliverReceiveRequest(missingSource)
+		t.Fatal(err)
+	}
+	_, _, _, decodeErr := decodeDeliverRequest(missingSource)
+	releaseDeliverReceiveRequest(missingSource)
+	if decodeErr == nil {
+		t.Fatal("pooled decoder accepted a deliver request without source presence")
+	}
+
+	responsePayload := []byte("response")
+	response := acquireDeliverResponse()
+	response.Payload = responsePayload
+	retainedResponsePayload := response.Payload
+	releaseDeliverResponse(response)
+	if !bytes.Equal(retainedResponsePayload, responsePayload) {
+		t.Fatalf("response payload changed after pool release: %q", retainedResponsePayload)
+	}
+	cleanResponse := acquireDeliverResponse()
+	if cleanResponse.Payload != nil {
+		t.Fatalf("pooled response retained payload: %q", cleanResponse.Payload)
+	}
+	releaseDeliverResponse(cleanResponse)
 }
 
 func TestRPCOperationResponsesRoundTrip(t *testing.T) {
