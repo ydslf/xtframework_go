@@ -51,7 +51,7 @@ err := service.CallService(
 Service 收到消息号和原始负载后自行解码：
 
 ```go
-func (s *Room) HandleRPCDirect(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+func (s *Room) HandleRPCDirect(ctx xtframework.MessageContext, messageID uint32, payload []byte) error {
     switch messageID {
     case 1001:
         var request gamepb.PlayerEnter
@@ -65,7 +65,7 @@ func (s *Room) HandleRPCDirect(ctx *xtframework.MessageContext, messageID uint32
     }
 }
 
-func (s *Room) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+func (s *Room) HandleRPCRequest(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
     switch messageID {
     case 1002:
         var request gamepb.PlayerQuery
@@ -82,7 +82,7 @@ func (s *Room) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint3
 `Service` 同时定义数字和字符串消息处理方法。嵌入 `BaseService` 后，字符串处理方法已有默认的“不处理”实现，只需按业务需要覆盖：
 
 ```go
-func (s *Room) HandleRPCDirectString(ctx *xtframework.MessageContext, messageID string, payload []byte) error {
+func (s *Room) HandleRPCDirectString(ctx xtframework.MessageContext, messageID string, payload []byte) error {
 	switch messageID {
 	case "player.enter":
 		// 解码并处理 payload
@@ -92,7 +92,7 @@ func (s *Room) HandleRPCDirectString(ctx *xtframework.MessageContext, messageID 
 	}
 }
 
-func (s *Room) HandleRPCRequestString(ctx *xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
+func (s *Room) HandleRPCRequestString(ctx xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
 	switch messageID {
 	case "player.query":
 		// 解码请求并返回响应

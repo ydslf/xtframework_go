@@ -747,20 +747,20 @@ func (n *Node) dispatchLocalDirect(source, target ServiceKey, messageID serviceM
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
 	}
 	service := runtime.service
-	var handle func(*MessageContext, []byte) error
+	var handle func(MessageContext, []byte) error
 	switch messageID.kind {
 	case serviceMessageIDNumeric:
-		handle = func(ctx *MessageContext, payload []byte) error {
+		handle = func(ctx MessageContext, payload []byte) error {
 			return service.HandleRPCDirect(ctx, messageID.number, payload)
 		}
 	case serviceMessageIDString:
-		handle = func(ctx *MessageContext, payload []byte) error {
+		handle = func(ctx MessageContext, payload []byte) error {
 			return service.HandleRPCDirectString(ctx, messageID.text, payload)
 		}
 	default:
 		return fmt.Errorf("%w: message id kind is invalid", ErrInvalidMessage)
 	}
-	messageContext := &MessageContext{
+	messageContext := MessageContext{
 		source: source,
 		target: target,
 	}
@@ -786,20 +786,20 @@ func (n *Node) dispatchLocalRequest(source, target ServiceKey, messageID service
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
 	}
 	service := runtime.service
-	var handle func(*MessageContext, []byte) ([]byte, error)
+	var handle func(MessageContext, []byte) ([]byte, error)
 	switch messageID.kind {
 	case serviceMessageIDNumeric:
-		handle = func(ctx *MessageContext, payload []byte) ([]byte, error) {
+		handle = func(ctx MessageContext, payload []byte) ([]byte, error) {
 			return service.HandleRPCRequest(ctx, messageID.number, payload)
 		}
 	case serviceMessageIDString:
-		handle = func(ctx *MessageContext, payload []byte) ([]byte, error) {
+		handle = func(ctx MessageContext, payload []byte) ([]byte, error) {
 			return service.HandleRPCRequestString(ctx, messageID.text, payload)
 		}
 	default:
 		return fmt.Errorf("%w: message id kind is invalid", ErrInvalidMessage)
 	}
-	messageContext := &MessageContext{
+	messageContext := MessageContext{
 		source: source,
 		target: target,
 	}

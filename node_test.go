@@ -21,22 +21,27 @@ const (
 
 type frameworkTestService struct {
 	BaseService
-	received chan string
+	received chan receivedMessage
 }
 
-func (s *frameworkTestService) HandleRPCDirect(_ *MessageContext, messageID uint32, payload []byte) error {
+type receivedMessage struct {
+	context MessageContext
+	payload string
+}
+
+func (s *frameworkTestService) HandleRPCDirect(ctx MessageContext, messageID uint32, payload []byte) error {
 	if messageID != testRequestID {
 		return fmt.Errorf("unexpected message id %d", messageID)
 	}
 	text := string(payload)
 	select {
-	case s.received <- text:
+	case s.received <- receivedMessage{context: ctx, payload: text}:
 	default:
 	}
 	return nil
 }
 
-func (s *frameworkTestService) HandleRPCRequest(ctx *MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+func (s *frameworkTestService) HandleRPCRequest(ctx MessageContext, messageID uint32, payload []byte) ([]byte, error) {
 	if string(payload) == "panic" {
 		panic("request panic")
 	}
@@ -49,18 +54,18 @@ func (s *frameworkTestService) HandleRPCRequest(ctx *MessageContext, messageID u
 	return []byte("reply:" + string(payload)), nil
 }
 
-func (s *frameworkTestService) HandleRPCDirectString(_ *MessageContext, messageID string, payload []byte) error {
+func (s *frameworkTestService) HandleRPCDirectString(ctx MessageContext, messageID string, payload []byte) error {
 	if messageID != testStringRequestID {
 		return fmt.Errorf("unexpected string message id %q", messageID)
 	}
 	select {
-	case s.received <- string(payload):
+	case s.received <- receivedMessage{context: ctx, payload: string(payload)}:
 	default:
 	}
 	return nil
 }
 
-func (s *frameworkTestService) HandleRPCRequestString(ctx *MessageContext, messageID string, payload []byte) ([]byte, error) {
+func (s *frameworkTestService) HandleRPCRequestString(ctx MessageContext, messageID string, payload []byte) ([]byte, error) {
 	if err := s.HandleRPCDirectString(ctx, messageID, payload); err != nil {
 		return nil, err
 	}
@@ -83,7 +88,7 @@ func (r *countingRegistry) Lookup(key ServiceKey) (ServiceLocation, bool) {
 }
 
 func (c *serviceCollector) factory(node *Node, config ServiceConfig) (Service, error) {
-	service := &frameworkTestService{BaseService: NewBaseService(node, config), received: make(chan string, 8)}
+	service := &frameworkTestService{BaseService: NewBaseService(node, config), received: make(chan receivedMessage, 8)}
 	c.mu.Lock()
 	c.services[fmt.Sprintf("%d/%s:%d", node.ID(), config.Name, config.ID)] = service
 	c.mu.Unlock()
@@ -117,15 +122,17 @@ func newTestXTLogger(t *testing.T) *xtlog.Logger {
 	return logger
 }
 
-func waitMessage(t *testing.T, ch <-chan string, want string) {
+func waitMessage(t *testing.T, ch <-chan receivedMessage, want string) MessageContext {
 	t.Helper()
 	select {
 	case got := <-ch:
-		if got != want {
-			t.Fatalf("message = %q, want %q", got, want)
+		if got.payload != want {
+			t.Fatalf("message = %q, want %q", got.payload, want)
 		}
+		return got.context
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timed out waiting for %q", want)
+		return MessageContext{}
 	}
 }
 
@@ -201,12 +208,18 @@ func TestNodeLocalAndRemoteMessaging(t *testing.T) {
 	if err := roomNode.Send2Service("room", 1, testRequestID, []byte("local")); err != nil {
 		t.Fatal(err)
 	}
-	waitMessage(t, room1.received, "local")
+	ctx := waitMessage(t, room1.received, "local")
+	if ctx.Source() != (ServiceKey{}) || ctx.Target() != (ServiceKey{Name: "room", ID: 1}) {
+		t.Fatalf("local message context = %v -> %v", ctx.Source(), ctx.Target())
+	}
 
 	if err := mainNode.Send2Service("room", 1, testRequestID, []byte("remote")); err != nil {
 		t.Fatal(err)
 	}
-	waitMessage(t, room1.received, "remote")
+	ctx = waitMessage(t, room1.received, "remote")
+	if ctx.Source() != (ServiceKey{}) || ctx.Target() != (ServiceKey{Name: "room", ID: 1}) {
+		t.Fatalf("remote message context = %v -> %v", ctx.Source(), ctx.Target())
+	}
 	if err := roomNode.Send2ServiceString("room", 1, testStringRequestID, []byte("string-local")); err != nil {
 		t.Fatal(err)
 	}
@@ -337,6 +350,12 @@ func TestCallServiceAsync(t *testing.T) {
 	}
 
 	room := collector.get(2, "room", 1)
+	for _, payload := range []string{"async-remote", "async-string-remote"} {
+		ctx := waitMessage(t, room.received, payload)
+		if ctx.Source() != (ServiceKey{}) || ctx.Target() != (ServiceKey{Name: "room", ID: 1}) {
+			t.Fatalf("remote message context = %v -> %v", ctx.Source(), ctx.Target())
+		}
+	}
 	accepted := make(chan error, 1)
 	selfResult := make(chan callResult, 1)
 	room.Loop().Post(func() {
@@ -359,6 +378,11 @@ func TestCallServiceAsync(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for self-call callback")
+	}
+	selfContext := waitMessage(t, room.received, "async-self")
+	roomKey := ServiceKey{Name: "room", ID: 1}
+	if selfContext.Source() != roomKey || selfContext.Target() != roomKey {
+		t.Fatalf("self-call message context = %v -> %v", selfContext.Source(), selfContext.Target())
 	}
 
 	selfStringResult := make(chan callResult, 1)

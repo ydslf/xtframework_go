@@ -19,10 +19,10 @@ type Service interface {
 	Loop() *frame.Loop
 	Start() error
 	Stop() error
-	HandleRPCDirect(*MessageContext, uint32, []byte) error
-	HandleRPCRequest(*MessageContext, uint32, []byte) ([]byte, error)
-	HandleRPCDirectString(*MessageContext, string, []byte) error
-	HandleRPCRequestString(*MessageContext, string, []byte) ([]byte, error)
+	HandleRPCDirect(MessageContext, uint32, []byte) error
+	HandleRPCRequest(MessageContext, uint32, []byte) ([]byte, error)
+	HandleRPCDirectString(MessageContext, string, []byte) error
+	HandleRPCRequestString(MessageContext, string, []byte) ([]byte, error)
 }
 
 type serviceMessageIDKind uint8
@@ -139,16 +139,16 @@ func (s *BaseService) Stop() error                                { return nil }
 func (s *BaseService) HandleServiceSnapshot(string, []ServiceKey) {}
 func (s *BaseService) HandleServiceOnline(ServiceKey)             {}
 func (s *BaseService) HandleServiceOffline(ServiceKey)            {}
-func (s *BaseService) HandleRPCDirect(*MessageContext, uint32, []byte) error {
+func (s *BaseService) HandleRPCDirect(MessageContext, uint32, []byte) error {
 	return fmt.Errorf("service %s:%d does not handle messages", s.Name(), s.ID())
 }
-func (s *BaseService) HandleRPCRequest(*MessageContext, uint32, []byte) ([]byte, error) {
+func (s *BaseService) HandleRPCRequest(MessageContext, uint32, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("service %s:%d does not handle requests", s.Name(), s.ID())
 }
-func (s *BaseService) HandleRPCDirectString(*MessageContext, string, []byte) error {
+func (s *BaseService) HandleRPCDirectString(MessageContext, string, []byte) error {
 	return fmt.Errorf("service %s:%d does not handle string messages", s.Name(), s.ID())
 }
-func (s *BaseService) HandleRPCRequestString(*MessageContext, string, []byte) ([]byte, error) {
+func (s *BaseService) HandleRPCRequestString(MessageContext, string, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("service %s:%d does not handle string requests", s.Name(), s.ID())
 }
 
@@ -234,5 +234,5 @@ type MessageContext struct {
 	target ServiceKey
 }
 
-func (c *MessageContext) Source() ServiceKey { return c.source }
-func (c *MessageContext) Target() ServiceKey { return c.target }
+func (c MessageContext) Source() ServiceKey { return c.source }
+func (c MessageContext) Target() ServiceKey { return c.target }

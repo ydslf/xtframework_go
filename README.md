@@ -57,7 +57,7 @@ type Echo struct {
     xtframework.BaseService
 }
 
-func (s *Echo) HandleRPCDirect(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+func (s *Echo) HandleRPCDirect(ctx xtframework.MessageContext, messageID uint32, payload []byte) error {
 	var request Request
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return err
@@ -66,7 +66,7 @@ func (s *Echo) HandleRPCDirect(ctx *xtframework.MessageContext, messageID uint32
     return nil
 }
 
-func (s *Echo) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+func (s *Echo) HandleRPCRequest(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
 	var request Request
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return nil, err
@@ -78,7 +78,7 @@ func (s *Echo) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint3
 也可以使用字符串消息 ID。发送方调用 `Send2ServiceString`、`CallServiceString` 或 `CallServiceSyncString`；`Service` 接口包含对应的字符串处理方法，嵌入 `BaseService` 后可按需覆盖 `HandleRPCDirectString` 或 `HandleRPCRequestString`：
 
 ```go
-func (s *Echo) HandleRPCRequestString(ctx *xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
+func (s *Echo) HandleRPCRequestString(ctx xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
 	if messageID != "echo.request" {
 		return nil, fmt.Errorf("unknown message id %q", messageID)
 	}

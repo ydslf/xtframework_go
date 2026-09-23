@@ -23,7 +23,7 @@ type exampleService struct {
 	xtframework.BaseService
 }
 
-func (s *exampleService) decodePing(ctx *xtframework.MessageContext, messageID uint32, payload []byte) (ping, error) {
+func (s *exampleService) decodePing(ctx xtframework.MessageContext, messageID uint32, payload []byte) (ping, error) {
 	if messageID != messagePing {
 		return ping{}, fmt.Errorf("unknown message id %d", messageID)
 	}
@@ -35,12 +35,12 @@ func (s *exampleService) decodePing(ctx *xtframework.MessageContext, messageID u
 	return request, nil
 }
 
-func (s *exampleService) HandleRPCDirect(ctx *xtframework.MessageContext, messageID uint32, payload []byte) error {
+func (s *exampleService) HandleRPCDirect(ctx xtframework.MessageContext, messageID uint32, payload []byte) error {
 	_, err := s.decodePing(ctx, messageID, payload)
 	return err
 }
 
-func (s *exampleService) HandleRPCRequest(ctx *xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+func (s *exampleService) HandleRPCRequest(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
 	request, err := s.decodePing(ctx, messageID, payload)
 	if err != nil {
 		return nil, err
