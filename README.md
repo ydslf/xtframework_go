@@ -9,7 +9,7 @@
 - 本地 Service 通过 Loop 直接投递，远程 Service 通过 xtnet TCP RPC 通信。
 - 主 Node 维护内存服务注册表，其他 Node 查询后直连目标 Node。
 - 非主 Node 缓存主 Node 返回的 Service 路由，避免每条消息重复查询。
-- 支持异步单向 `Send2Service`、回调式 `CallService` 和阻塞式 `CallServiceSync`。
+- 支持异步单向 `Send2Service`、回调式 `CallServiceAsync` 和阻塞式 `CallServiceSync`。
 - 框架传输业务消息号和原始字节，序列化格式由应用层决定。
 - 框架不复制业务负载；调用 `Send2Service` 或 `Respond` 后不得修改或复用传入切片。
 
@@ -66,7 +66,7 @@ func (s *Echo) HandleRPCDirect(ctx xtframework.MessageContext, messageID uint32,
     return nil
 }
 
-func (s *Echo) HandleRPCRequest(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+func (s *Echo) HandleRPCRequestSync(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
 	var request Request
 	if err := json.Unmarshal(payload, &request); err != nil {
 		return nil, err
@@ -75,10 +75,10 @@ func (s *Echo) HandleRPCRequest(ctx xtframework.MessageContext, messageID uint32
 }
 ```
 
-也可以使用字符串消息 ID。发送方调用 `Send2ServiceString`、`CallServiceString` 或 `CallServiceSyncString`；`Service` 接口包含对应的字符串处理方法，嵌入 `BaseService` 后可按需覆盖 `HandleRPCDirectString` 或 `HandleRPCRequestString`：
+也可以使用字符串消息 ID。发送方调用 `Send2ServiceString`、`CallServiceStringAsync` 或 `CallServiceSyncString`；`Service` 接口包含对应的字符串处理方法，嵌入 `BaseService` 后可按需覆盖 `HandleRPCDirectString` 或 `HandleRPCRequestStringSync`：
 
 ```go
-func (s *Echo) HandleRPCRequestString(ctx xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
+func (s *Echo) HandleRPCRequestStringSync(ctx xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
 	if messageID != "echo.request" {
 		return nil, fmt.Errorf("unknown message id %q", messageID)
 	}
@@ -86,7 +86,23 @@ func (s *Echo) HandleRPCRequestString(ctx xtframework.MessageContext, messageID 
 }
 ```
 
-字符串消息 ID 必须是非空的有效 UTF-8，且最长 256 字节；原有 `uint32` API 和处理接口保持兼容。
+字符串消息 ID 必须是非空的有效 UTF-8，且最长 256 字节。
+
+`HandleRPCRequestAsync` 和 `HandleRPCRequestStringAsync` 是 `Service` 接口的一部分。
+处理器可以在处理器返回后调用 `MessageContext.Respond`，适用于等待异步 DB
+或其他回调后再响应；只允许成功调用一次，未响应的请求最终由调用方超时。同步
+与异步处理入口相互独立，不会自动回退到另一种处理方式。
+
+Service 的串行 Loop 默认保持 4096/开启扩容告警，也可在 YAML 中覆盖：
+
+```yaml
+services:
+  - name: room
+    id: 1
+    loop:
+      size: 10000
+      full_warn: true
+```
 
 在创建 Node 前注册 Service 工厂：
 

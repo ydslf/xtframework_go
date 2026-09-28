@@ -11,6 +11,7 @@ import (
 )
 
 type operation = rpcpb.RpcOperation
+type deliverRequestMode = rpcpb.DeliverRequestMode
 
 const (
 	opNone             operation = iota
@@ -23,6 +24,12 @@ const (
 	opHeartbeat                  = rpcpb.RpcOperation_RPC_OPERATION_HEARTBEAT
 	opSubscribe                  = rpcpb.RpcOperation_RPC_OPERATION_SUBSCRIBE
 	opServiceDiscovery           = rpcpb.RpcOperation_RPC_OPERATION_SERVICE_DISCOVERY
+)
+
+const (
+	deliverRequestModeDirect deliverRequestMode = rpcpb.DeliverRequestMode_DELIVER_REQUEST_MODE_DIRECT
+	deliverRequestModeSync   deliverRequestMode = rpcpb.DeliverRequestMode_DELIVER_REQUEST_MODE_SYNC
+	deliverRequestModeAsync  deliverRequestMode = rpcpb.DeliverRequestMode_DELIVER_REQUEST_MODE_ASYNC
 )
 
 type operationProtocol interface {
@@ -88,12 +95,13 @@ func acquireDeliverSendRequest() *rpcpb.DeliverRequest {
 	return deliverSendRequestPool.Get().(*rpcpb.DeliverRequest)
 }
 
-func initializeDeliverRequest(request *rpcpb.DeliverRequest, source, target ServiceKey, messageID serviceMessageID, payload []byte) {
+func initializeDeliverRequest(request *rpcpb.DeliverRequest, source, target ServiceKey, messageID serviceMessageID, payload []byte, mode deliverRequestMode) {
 	request.Source.Name = source.Name
 	request.Source.Id = int64(source.ID)
 	request.Target.Name = target.Name
 	request.Target.Id = int64(target.ID)
 	request.Payload = payload
+	request.Mode = mode
 	if messageID.kind == serviceMessageIDString {
 		request.StringMessageId = messageID.text
 	} else {

@@ -29,6 +29,23 @@ type receivedMessage struct {
 	payload string
 }
 
+type failingStartService struct {
+	BaseService
+	resourceOpen bool
+	stopCalls    int
+}
+
+func (s *failingStartService) Start() error {
+	s.resourceOpen = true
+	return errors.New("start failed after acquiring resource")
+}
+
+func (s *failingStartService) Stop() error {
+	s.stopCalls++
+	s.resourceOpen = false
+	return nil
+}
+
 func (s *frameworkTestService) HandleRPCDirect(ctx MessageContext, messageID uint32, payload []byte) error {
 	if messageID != testRequestID {
 		return fmt.Errorf("unexpected message id %d", messageID)
@@ -41,7 +58,7 @@ func (s *frameworkTestService) HandleRPCDirect(ctx MessageContext, messageID uin
 	return nil
 }
 
-func (s *frameworkTestService) HandleRPCRequest(ctx MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+func (s *frameworkTestService) HandleRPCRequestSync(ctx MessageContext, messageID uint32, payload []byte) ([]byte, error) {
 	if string(payload) == "panic" {
 		panic("request panic")
 	}
@@ -52,6 +69,11 @@ func (s *frameworkTestService) HandleRPCRequest(ctx MessageContext, messageID ui
 		return nil, err
 	}
 	return []byte("reply:" + string(payload)), nil
+}
+
+func (s *frameworkTestService) HandleRPCRequestAsync(ctx MessageContext, messageID uint32, payload []byte) {
+	response, err := s.HandleRPCRequestSync(ctx, messageID, payload)
+	_ = ctx.Respond(response, err)
 }
 
 func (s *frameworkTestService) HandleRPCDirectString(ctx MessageContext, messageID string, payload []byte) error {
@@ -65,11 +87,16 @@ func (s *frameworkTestService) HandleRPCDirectString(ctx MessageContext, message
 	return nil
 }
 
-func (s *frameworkTestService) HandleRPCRequestString(ctx MessageContext, messageID string, payload []byte) ([]byte, error) {
+func (s *frameworkTestService) HandleRPCRequestStringSync(ctx MessageContext, messageID string, payload []byte) ([]byte, error) {
 	if err := s.HandleRPCDirectString(ctx, messageID, payload); err != nil {
 		return nil, err
 	}
 	return []byte("string-reply:" + string(payload)), nil
+}
+
+func (s *frameworkTestService) HandleRPCRequestStringAsync(ctx MessageContext, messageID string, payload []byte) {
+	response, err := s.HandleRPCRequestStringSync(ctx, messageID, payload)
+	_ = ctx.Respond(response, err)
 }
 
 type serviceCollector struct {
@@ -144,6 +171,12 @@ func waitUntil(t *testing.T, condition func() bool, description string) {
 			t.Fatalf("timed out waiting for %s", description)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestMessageContextRespondWithoutResponder(t *testing.T) {
+	if err := (MessageContext{}).Respond(nil, nil); err == nil {
+		t.Fatal("Respond() succeeded without an asynchronous responder")
 	}
 }
 
@@ -320,7 +353,7 @@ func TestCallServiceAsync(t *testing.T) {
 		err     error
 	}
 	remoteResult := make(chan callResult, 1)
-	if err := mainNode.CallService("room", 1, testRequestID, []byte("async-remote"), func(payload []byte, err error) {
+	if err := mainNode.CallServiceAsync("room", 1, testRequestID, []byte("async-remote"), func(payload []byte, err error) {
 		remoteResult <- callResult{payload: payload, err: err}
 	}); err != nil {
 		t.Fatal(err)
@@ -335,7 +368,7 @@ func TestCallServiceAsync(t *testing.T) {
 	}
 
 	remoteStringResult := make(chan callResult, 1)
-	if err := mainNode.CallServiceString("room", 1, testStringRequestID, []byte("async-string-remote"), func(payload []byte, err error) {
+	if err := mainNode.CallServiceStringAsync("room", 1, testStringRequestID, []byte("async-string-remote"), func(payload []byte, err error) {
 		remoteStringResult <- callResult{payload: payload, err: err}
 	}); err != nil {
 		t.Fatal(err)
@@ -359,7 +392,7 @@ func TestCallServiceAsync(t *testing.T) {
 	accepted := make(chan error, 1)
 	selfResult := make(chan callResult, 1)
 	room.Loop().Post(func() {
-		accepted <- room.CallService("room", 1, testRequestID, []byte("async-self"), func(payload []byte, err error) {
+		accepted <- room.CallServiceAsync("room", 1, testRequestID, []byte("async-self"), func(payload []byte, err error) {
 			selfResult <- callResult{payload: payload, err: err}
 		})
 	})
@@ -369,7 +402,7 @@ func TestCallServiceAsync(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("CallService blocked its source Service Loop")
+		t.Fatal("CallServiceAsync blocked its source Service Loop")
 	}
 	select {
 	case result := <-selfResult:
@@ -387,7 +420,7 @@ func TestCallServiceAsync(t *testing.T) {
 
 	selfStringResult := make(chan callResult, 1)
 	room.Loop().Post(func() {
-		accepted <- room.CallServiceString("room", 1, testStringRequestID, []byte("async-string-self"), func(payload []byte, err error) {
+		accepted <- room.CallServiceStringAsync("room", 1, testStringRequestID, []byte("async-string-self"), func(payload []byte, err error) {
 			selfStringResult <- callResult{payload: payload, err: err}
 		})
 	})
@@ -397,7 +430,7 @@ func TestCallServiceAsync(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("CallServiceString blocked its source Service Loop")
+		t.Fatal("CallServiceStringAsync blocked its source Service Loop")
 	}
 	select {
 	case result := <-selfStringResult:
@@ -409,7 +442,7 @@ func TestCallServiceAsync(t *testing.T) {
 	}
 
 	localExpiryResult := make(chan callResult, 1)
-	if err := roomNode.CallService("room", 1, testRequestID, []byte("slow"), func(payload []byte, err error) {
+	if err := roomNode.CallServiceAsync("room", 1, testRequestID, []byte("slow"), func(payload []byte, err error) {
 		localExpiryResult <- callResult{payload: payload, err: err}
 	}); err != nil {
 		t.Fatal(err)
@@ -424,7 +457,7 @@ func TestCallServiceAsync(t *testing.T) {
 	}
 
 	missingResult := make(chan callResult, 1)
-	err = roomNode.CallService("missing", 1, testRequestID, nil, func(payload []byte, err error) {
+	err = roomNode.CallServiceAsync("missing", 1, testRequestID, nil, func(payload []byte, err error) {
 		missingResult <- callResult{payload: payload, err: err}
 	})
 	if !errors.Is(err, ErrServiceNotFound) {
@@ -436,8 +469,8 @@ func TestCallServiceAsync(t *testing.T) {
 	default:
 	}
 
-	if err := mainNode.CallService("room", 1, testRequestID, nil, nil); err == nil {
-		t.Fatal("CallService accepted a nil callback")
+	if err := mainNode.CallServiceAsync("room", 1, testRequestID, nil, nil); err == nil {
+		t.Fatal("CallServiceAsync accepted a nil callback")
 	}
 }
 
@@ -545,6 +578,41 @@ func TestNodeStartRollsBackRegisteredServices(t *testing.T) {
 	}
 	if _, found := mainNode.RegisteredService(ServiceKey{Name: "room", ID: 1}); found {
 		t.Fatal("service registered before startup failure was not rolled back")
+	}
+}
+
+func TestServiceStartFailureCallsStopForPartialResourceRollback(t *testing.T) {
+	var service *failingStartService
+	factories := NewFactoryRegistry()
+	if err := factories.Register("failing", func(node *Node, cfg ServiceConfig) (Service, error) {
+		service = &failingStartService{BaseService: NewBaseService(node, cfg)}
+		return service, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		MainNode: 1,
+		Nodes: []NodeConfig{{
+			ID:         1,
+			ListenAddr: freeAddress(t),
+			Services:   []ServiceConfig{{Name: "failing", ID: 1}},
+		}},
+	}
+	node, err := NewNode(cfg, 1, WithFactoryRegistry(factories), WithLogger(newTestXTLogger(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node.Start(); err == nil {
+		t.Fatal("Start() succeeded, want failure")
+	}
+	if service == nil {
+		t.Fatal("service was not constructed")
+	}
+	if service.resourceOpen {
+		t.Fatal("partially acquired resource was not released")
+	}
+	if service.stopCalls != 1 {
+		t.Fatalf("Stop() calls = %d, want 1", service.stopCalls)
 	}
 }
 

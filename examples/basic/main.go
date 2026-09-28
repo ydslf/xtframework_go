@@ -40,7 +40,7 @@ func (s *exampleService) HandleRPCDirect(ctx xtframework.MessageContext, message
 	return err
 }
 
-func (s *exampleService) HandleRPCRequest(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+func (s *exampleService) HandleRPCRequestSync(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
 	request, err := s.decodePing(ctx, messageID, payload)
 	if err != nil {
 		return nil, err

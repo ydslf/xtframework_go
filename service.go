@@ -13,6 +13,10 @@ type Factory func(node *Node, config ServiceConfig) (Service, error)
 // ServiceCallCallback 用于接收异步 Service 调用的结果。
 type ServiceCallCallback func(payload []byte, err error)
 
+// ServiceRespondFunc completes an asynchronous Service request. It may be
+// called after the handler returns, but only the first call is accepted.
+type ServiceRespondFunc func(payload []byte, err error)
+
 type Service interface {
 	Name() string
 	ID() int
@@ -20,9 +24,11 @@ type Service interface {
 	Start() error
 	Stop() error
 	HandleRPCDirect(MessageContext, uint32, []byte) error
-	HandleRPCRequest(MessageContext, uint32, []byte) ([]byte, error)
+	HandleRPCRequestSync(MessageContext, uint32, []byte) ([]byte, error)
+	HandleRPCRequestAsync(MessageContext, uint32, []byte)
 	HandleRPCDirectString(MessageContext, string, []byte) error
-	HandleRPCRequestString(MessageContext, string, []byte) ([]byte, error)
+	HandleRPCRequestStringSync(MessageContext, string, []byte) ([]byte, error)
+	HandleRPCRequestStringAsync(MessageContext, string, []byte)
 }
 
 type serviceMessageIDKind uint8
@@ -126,7 +132,13 @@ func NewBaseService(node *Node, config ServiceConfig) BaseService {
 			LogField{Key: "service_id", Value: config.ID},
 		)
 	}
-	return BaseService{node: node, config: config, loop: frame.NewLoop(frame.LoopSizeMin, true), logger: logger}
+	loopSize := frame.LoopSizeMin
+	loopFullWarn := true
+	if config.Loop != nil {
+		loopSize = config.Loop.Size
+		loopFullWarn = config.Loop.FullWarn
+	}
+	return BaseService{node: node, config: config, loop: frame.NewLoop(loopSize, loopFullWarn), logger: logger}
 }
 
 func (s *BaseService) Name() string                               { return s.config.Name }
@@ -142,14 +154,20 @@ func (s *BaseService) HandleServiceOffline(ServiceKey)            {}
 func (s *BaseService) HandleRPCDirect(MessageContext, uint32, []byte) error {
 	return fmt.Errorf("service %s:%d does not handle messages", s.Name(), s.ID())
 }
-func (s *BaseService) HandleRPCRequest(MessageContext, uint32, []byte) ([]byte, error) {
+func (s *BaseService) HandleRPCRequestSync(MessageContext, uint32, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("service %s:%d does not handle requests", s.Name(), s.ID())
+}
+func (s *BaseService) HandleRPCRequestAsync(ctx MessageContext, _ uint32, _ []byte) {
+	_ = ctx.Respond(nil, fmt.Errorf("service %s:%d does not handle async requests", s.Name(), s.ID()))
 }
 func (s *BaseService) HandleRPCDirectString(MessageContext, string, []byte) error {
 	return fmt.Errorf("service %s:%d does not handle string messages", s.Name(), s.ID())
 }
-func (s *BaseService) HandleRPCRequestString(MessageContext, string, []byte) ([]byte, error) {
+func (s *BaseService) HandleRPCRequestStringSync(MessageContext, string, []byte) ([]byte, error) {
 	return nil, fmt.Errorf("service %s:%d does not handle string requests", s.Name(), s.ID())
+}
+func (s *BaseService) HandleRPCRequestStringAsync(ctx MessageContext, _ string, _ []byte) {
+	_ = ctx.Respond(nil, fmt.Errorf("service %s:%d does not handle async string requests", s.Name(), s.ID()))
 }
 
 // Subscribe 订阅指定名字的全部 Service 实例。可以在 Start 中调用；此时
@@ -178,33 +196,33 @@ func (s *BaseService) Send2ServiceString(serviceName string, serviceID int, mess
 	return s.node.send2Service(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload)
 }
 
-// CallService 异步调用另一个 Service。返回 nil 表示请求已被接受；调用完成后，
+// CallServiceAsync 异步调用另一个 Service。返回 nil 表示请求已被接受；调用完成后，
 // callback 会被投递到当前 Service 的 Loop 中执行。返回非 nil 错误时不会调用 callback。
 // Node 配置的 Service 调用超时只约束远端 RPC，本地 Service 调用不计算超时。
-func (s *BaseService) CallService(serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
+func (s *BaseService) CallServiceAsync(serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
 	}
 	if s.node == nil {
 		return ErrNodeStopped
 	}
-	return s.node.callService(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
+	return s.node.callServiceAsync(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
 		s.loop.Post(func() {
 			callback(responsePayload, responseErr)
 		})
 	})
 }
 
-// CallServiceString 异步调用另一个 Service，并使用字符串消息 ID。
+// CallServiceStringAsync 异步调用另一个 Service，并使用字符串消息 ID。
 // callback 会被投递到当前 Service 的 Loop 中执行。
-func (s *BaseService) CallServiceString(serviceName string, serviceID int, messageID string, payload []byte, callback ServiceCallCallback) error {
+func (s *BaseService) CallServiceStringAsync(serviceName string, serviceID int, messageID string, payload []byte, callback ServiceCallCallback) error {
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
 	}
 	if s.node == nil {
 		return ErrNodeStopped
 	}
-	return s.node.callService(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
+	return s.node.callServiceAsync(ServiceKey{Name: s.Name(), ID: s.ID()}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
 		s.loop.Post(func() {
 			callback(responsePayload, responseErr)
 		})
@@ -230,9 +248,20 @@ func (s *BaseService) CallServiceSyncString(serviceName string, serviceID int, m
 }
 
 type MessageContext struct {
-	source ServiceKey
-	target ServiceKey
+	source  ServiceKey
+	target  ServiceKey
+	respond ServiceRespondFunc
 }
 
 func (c MessageContext) Source() ServiceKey { return c.source }
 func (c MessageContext) Target() ServiceKey { return c.target }
+
+// Respond completes an asynchronous request. It returns an error when the
+// context belongs to a direct or synchronous message and cannot respond.
+func (c MessageContext) Respond(payload []byte, err error) error {
+	if c.respond == nil {
+		return fmt.Errorf("message context cannot respond")
+	}
+	c.respond(payload, err)
+	return nil
+}

@@ -16,7 +16,7 @@
 
 每个 Service 必须拥有不同的 `*frame.Loop`。推荐嵌入 `BaseService`，它已提供身份、Loop、配置以及数字消息 ID 和字符串消息 ID 对应的发送、调用方法。
 
-框架支持 `uint32` 和字符串两种业务消息 ID，并传输 `[]byte` 负载。数字 ID 使用原有的 `Send2Service`、`CallService`、`CallServiceSync`；字符串 ID 使用对应的 `Send2ServiceString`、`CallServiceString`、`CallServiceSyncString`。数字 `0`、空字符串、无效 UTF-8 以及超过 256 字节的字符串 ID 均为无效消息。应用负责使用 Protobuf、JSON 或其他格式编码和解码；空负载是合法消息。框架不会复制业务负载；发送或响应后，调用者不得再修改或复用传入的切片。
+框架支持 `uint32` 和字符串两种业务消息 ID，并传输 `[]byte` 负载。数字 ID 使用原有的 `Send2Service`、`CallServiceAsync`、`CallServiceSync`；字符串 ID 使用对应的 `Send2ServiceString`、`CallServiceStringAsync`、`CallServiceSyncString`。数字 `0`、空字符串、无效 UTF-8 以及超过 256 字节的字符串 ID 均为无效消息。应用负责使用 Protobuf、JSON 或其他格式编码和解码；空负载是合法消息。框架不会复制业务负载；发送或响应后，调用者不得再修改或复用传入的切片。
 
 单向发送：
 
@@ -36,7 +36,7 @@ err := service.Send2ServiceString("room", 1, "player.enter", payload)
 异步请求响应：
 
 ```go
-err := service.CallService(
+err := service.CallServiceAsync(
 	"center", 1, 1001, requestPayload,
 	func(replyPayload []byte, err error) {
 		// 回调在调用方 Service 的 Loop 中执行。
@@ -44,7 +44,7 @@ err := service.CallService(
 )
 ```
 
-目标 Service 在 `HandleRPCRequest` 中返回响应负载和错误；响应不携带消息号。处理器 panic 或返回的错误都会转换为调用错误。处理器返回后不得再修改或复用响应负载。`CallService` 不阻塞，回调会投递回调用方 Service 的 Loop；返回错误表示请求未发起，此时不会执行回调。Service 调用超时通过 Node 的 `service_call_timeout` 配置，默认值为 `3s`，也可通过 `WithServiceCallTimeout` 覆盖 YAML。为避免本地高频调用产生定时器开销，异步本地调用不计算超时；`CallServiceSync` 的本地和远端调用都会等待结果或超时，不应在需要保持响应的 Service Loop 中使用。
+目标 Service 在 `HandleRPCRequestAsync` 中调用 `MessageContext.Respond` 返回响应负载和错误；响应不携带消息号。处理器 panic 或响应错误都会转换为调用错误。响应后不得再修改或复用响应负载。`CallServiceAsync` 不阻塞，回调会投递回调用方 Service 的 Loop；返回错误表示请求未发起，此时不会执行回调。Service 调用超时通过 Node 的 `service_call_timeout` 配置，默认值为 `3s`，也可通过 `WithServiceCallTimeout` 覆盖 YAML。为避免本地高频调用产生定时器开销，异步本地调用不计算超时；`CallServiceSync` 的本地和远端调用都会等待结果或超时，不应在需要保持响应的 Service Loop 中使用。
 
 ## 应用层编解码
 
@@ -65,7 +65,7 @@ func (s *Room) HandleRPCDirect(ctx xtframework.MessageContext, messageID uint32,
     }
 }
 
-func (s *Room) HandleRPCRequest(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
+func (s *Room) HandleRPCRequestSync(ctx xtframework.MessageContext, messageID uint32, payload []byte) ([]byte, error) {
     switch messageID {
     case 1002:
         var request gamepb.PlayerQuery
@@ -92,7 +92,7 @@ func (s *Room) HandleRPCDirectString(ctx xtframework.MessageContext, messageID s
 	}
 }
 
-func (s *Room) HandleRPCRequestString(ctx xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
+func (s *Room) HandleRPCRequestStringSync(ctx xtframework.MessageContext, messageID string, payload []byte) ([]byte, error) {
 	switch messageID {
 	case "player.query":
 		// 解码请求并返回响应

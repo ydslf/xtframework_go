@@ -37,9 +37,17 @@ type LoggerConfig struct {
 }
 
 type ServiceConfig struct {
-	Name    string         `yaml:"name"`
-	ID      int            `yaml:"id"`
-	Options map[string]any `yaml:"options,omitempty"`
+	Name    string             `yaml:"name"`
+	ID      int                `yaml:"id"`
+	Loop    *ServiceLoopConfig `yaml:"loop,omitempty"`
+	Options map[string]any     `yaml:"options,omitempty"`
+}
+
+// ServiceLoopConfig configures the serial execution loop owned by a Service.
+// A nil configuration preserves the framework defaults.
+type ServiceLoopConfig struct {
+	Size     int  `yaml:"size,omitempty"`
+	FullWarn bool `yaml:"full_warn"`
 }
 
 // LoadConfig 读取 YAML 配置文件并校验其结构。
@@ -127,6 +135,9 @@ func (c *Config) Validate() error {
 			}
 			if s.ID <= 0 {
 				return fmt.Errorf("nodes[%d].services[%d].id must be positive", i, j)
+			}
+			if s.Loop != nil && s.Loop.Size < 0 {
+				return fmt.Errorf("nodes[%d].services[%d].loop.size must not be negative", i, j)
 			}
 			key := ServiceKey{Name: s.Name, ID: s.ID}
 			if _, exists := services[key]; exists {

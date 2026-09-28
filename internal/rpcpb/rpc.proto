@@ -24,6 +24,13 @@ enum ServiceDiscoveryEventType {
   SERVICE_DISCOVERY_EVENT_TYPE_OFFLINE = 3;
 }
 
+enum DeliverRequestMode {
+  DELIVER_REQUEST_MODE_UNSPECIFIED = 0;
+  DELIVER_REQUEST_MODE_DIRECT = 1;
+  DELIVER_REQUEST_MODE_SYNC = 2;
+  DELIVER_REQUEST_MODE_ASYNC = 3;
+}
+
 message RpcEnvelope {
   RpcOperation operation = 1;
   bytes payload = 2;
@@ -102,6 +109,7 @@ message DeliverRequest {
   uint32 message_id = 3;
   string string_message_id = 4;
   bytes payload = 5;
+  DeliverRequestMode mode = 6;
 }
 
 message DeliverResponse {

@@ -457,8 +457,15 @@ func (n *Node) startRPCServer() error {
 func (n *Node) startService(runtime *serviceRuntime) error {
 	startFrameLoop(runtime.service.Loop(), &runtime.wg)
 	if err := callOnLoop(runtime.service.Loop(), runtime.service.Start); err != nil {
+		// Start may have acquired listeners, workers, timers, or other partial
+		// resources before failing. Give the Service the same rollback hook used
+		// during a normal shutdown while its Loop is still operational.
+		rollbackErr := callOnLoop(runtime.service.Loop(), runtime.service.Stop)
 		runtime.service.Loop().Close(false)
 		runtime.wg.Wait()
+		if rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback failed service start: %w", rollbackErr))
+		}
 		return err
 	}
 	runtime.started = true
@@ -579,7 +586,7 @@ func (n *Node) send2Service(source, target ServiceKey, messageID serviceMessageI
 		return err
 	}
 	requestProtocol := acquireDeliverSendRequest()
-	initializeDeliverRequest(requestProtocol, source, target, messageID, payload)
+	initializeDeliverRequest(requestProtocol, source, target, messageID, payload, deliverRequestModeDirect)
 	err = client.send(opDeliver, requestProtocol)
 	releaseDeliverSendRequest(requestProtocol)
 	if err != nil {
@@ -588,14 +595,14 @@ func (n *Node) send2Service(source, target ServiceKey, messageID serviceMessageI
 	return err
 }
 
-// CallService 异步调用一个 Service。返回 nil 表示请求已被接受，callback 将在独立
+// CallServiceAsync 异步调用一个 Service。返回 nil 表示请求已被接受，callback 将在独立
 // goroutine 中执行且只执行一次。返回非 nil 错误时不会调用 callback。
 // Node 配置的 Service 调用超时只约束远端 RPC，本地 Service 调用不计算超时。
-func (n *Node) CallService(serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
+func (n *Node) CallServiceAsync(serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
 	}
-	return n.callService(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
+	return n.callServiceAsync(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, numericServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
 		go func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
@@ -607,12 +614,12 @@ func (n *Node) CallService(serviceName string, serviceID int, messageID uint32, 
 	})
 }
 
-// CallServiceString 异步调用一个 Service，并使用字符串消息 ID。
-func (n *Node) CallServiceString(serviceName string, serviceID int, messageID string, payload []byte, callback ServiceCallCallback) error {
+// CallServiceStringAsync 异步调用一个 Service，并使用字符串消息 ID。
+func (n *Node) CallServiceStringAsync(serviceName string, serviceID int, messageID string, payload []byte, callback ServiceCallCallback) error {
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
 	}
-	return n.callService(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
+	return n.callServiceAsync(ServiceKey{}, ServiceKey{Name: serviceName, ID: serviceID}, stringServiceMessageID(messageID), payload, func(responsePayload []byte, responseErr error) {
 		go func() {
 			defer func() {
 				if recovered := recover(); recovered != nil {
@@ -624,7 +631,7 @@ func (n *Node) CallServiceString(serviceName string, serviceID int, messageID st
 	})
 }
 
-func (n *Node) callService(source, target ServiceKey, messageID serviceMessageID, payload []byte, callback ServiceCallCallback) error {
+func (n *Node) callServiceAsync(source, target ServiceKey, messageID serviceMessageID, payload []byte, callback ServiceCallCallback) error {
 	if !n.operational() {
 		return ErrNodeStopped
 	}
@@ -635,10 +642,27 @@ func (n *Node) callService(source, target ServiceKey, messageID serviceMessageID
 		return fmt.Errorf("service call callback is nil")
 	}
 	if _, local := n.localServices[target]; local {
-		return n.dispatchLocalRequest(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
+		var completed atomic.Bool
+		timer := time.AfterFunc(n.serviceCallTimeout, func() {
+			if completed.CompareAndSwap(false, true) {
+				callback(nil, fmt.Errorf("call service %s: timeout after %s", target, n.serviceCallTimeout))
+			}
+		})
+		err := n.dispatchLocalRequestAsync(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
+			if !completed.CompareAndSwap(false, true) {
+				return fmt.Errorf("response arrived after call completion")
+			}
+			timer.Stop()
 			callback(responsePayload, responseErr)
 			return nil
 		})
+		if err != nil {
+			if completed.CompareAndSwap(false, true) {
+				timer.Stop()
+			}
+			return err
+		}
+		return nil
 	}
 
 	location, err := n.lookupService(target)
@@ -651,7 +675,7 @@ func (n *Node) callService(source, target ServiceKey, messageID serviceMessageID
 		return err
 	}
 	requestProtocol := acquireDeliverSendRequest()
-	initializeDeliverRequest(requestProtocol, source, target, messageID, payload)
+	initializeDeliverRequest(requestProtocol, source, target, messageID, payload, deliverRequestModeAsync)
 	responseProtocol := acquireDeliverResponse()
 	err = client.requestAsync(n.serviceCallTimeout, opDeliver, requestProtocol, responseProtocol, func(requestErr error) {
 		defer releaseDeliverResponse(responseProtocol)
@@ -698,7 +722,7 @@ func (n *Node) callServiceSync(source, target ServiceKey, messageID serviceMessa
 			err     error
 		}
 		responses := make(chan localResponse, 1)
-		err := n.dispatchLocalRequest(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
+		err := n.dispatchLocalRequestSync(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
 			responses <- localResponse{payload: responsePayload, err: responseErr}
 			return nil
 		})
@@ -725,7 +749,7 @@ func (n *Node) callServiceSync(source, target ServiceKey, messageID serviceMessa
 		return nil, err
 	}
 	requestProtocol := acquireDeliverSendRequest()
-	initializeDeliverRequest(requestProtocol, source, target, messageID, payload)
+	initializeDeliverRequest(requestProtocol, source, target, messageID, payload, deliverRequestModeSync)
 	responseProtocol := acquireDeliverResponse()
 	err = client.requestSync(n.serviceCallTimeout, opDeliver, requestProtocol, responseProtocol)
 	releaseDeliverSendRequest(requestProtocol)
@@ -780,7 +804,54 @@ func (n *Node) dispatchLocalDirect(source, target ServiceKey, messageID serviceM
 
 type localResponder func([]byte, error) error
 
-func (n *Node) dispatchLocalRequest(source, target ServiceKey, messageID serviceMessageID, payload []byte, responder localResponder) error {
+func (n *Node) dispatchLocalRequestAsync(source, target ServiceKey, messageID serviceMessageID, payload []byte, responder localResponder) error {
+	runtime, exists := n.localServices[target]
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
+	}
+	service := runtime.service
+	var handle func(MessageContext, []byte)
+	switch messageID.kind {
+	case serviceMessageIDNumeric:
+		handle = func(ctx MessageContext, payload []byte) {
+			service.HandleRPCRequestAsync(ctx, messageID.number, payload)
+		}
+	case serviceMessageIDString:
+		handle = func(ctx MessageContext, payload []byte) {
+			service.HandleRPCRequestStringAsync(ctx, messageID.text, payload)
+		}
+	default:
+		return fmt.Errorf("%w: message id kind is invalid", ErrInvalidMessage)
+	}
+	service.Loop().Post(func() {
+		var responded atomic.Bool
+		respondOnce := func(responsePayload []byte, responseErr error) {
+			if !responded.CompareAndSwap(false, true) {
+				n.report(fmt.Errorf("service %s responded more than once to message %s", target, messageID))
+				return
+			}
+			if err := responder(responsePayload, responseErr); err != nil {
+				n.report(fmt.Errorf("respond to message %s from service %s: %w", messageID, target, err))
+			}
+		}
+		messageContext := MessageContext{
+			source:  source,
+			target:  target,
+			respond: respondOnce,
+		}
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					respondOnce(nil, fmt.Errorf("service %s panic: %v\n%s", target, recovered, debug.Stack()))
+				}
+			}()
+			handle(messageContext, payload)
+		}()
+	})
+	return nil
+}
+
+func (n *Node) dispatchLocalRequestSync(source, target ServiceKey, messageID serviceMessageID, payload []byte, responder localResponder) error {
 	runtime, exists := n.localServices[target]
 	if !exists {
 		return fmt.Errorf("%w: %s", ErrServiceNotFound, target)
@@ -790,11 +861,11 @@ func (n *Node) dispatchLocalRequest(source, target ServiceKey, messageID service
 	switch messageID.kind {
 	case serviceMessageIDNumeric:
 		handle = func(ctx MessageContext, payload []byte) ([]byte, error) {
-			return service.HandleRPCRequest(ctx, messageID.number, payload)
+			return service.HandleRPCRequestSync(ctx, messageID.number, payload)
 		}
 	case serviceMessageIDString:
 		handle = func(ctx MessageContext, payload []byte) ([]byte, error) {
-			return service.HandleRPCRequestString(ctx, messageID.text, payload)
+			return service.HandleRPCRequestStringSync(ctx, messageID.text, payload)
 		}
 	default:
 		return fmt.Errorf("%w: message id kind is invalid", ErrInvalidMessage)
@@ -962,10 +1033,15 @@ func (n *Node) handleRPCDirect(session xtnetNet.ISession, rpk *packet.ReadPacket
 			n.report(rpcInvalidMessage(err))
 			return
 		}
-		source, target, messageID, err := decodeDeliverRequest(request)
+		source, target, messageID, mode, err := decodeDeliverRequest(request)
 		if err != nil {
 			releaseDeliverReceiveRequest(request)
 			n.report(rpcInvalidMessage(err))
+			return
+		}
+		if mode != deliverRequestModeDirect {
+			releaseDeliverReceiveRequest(request)
+			n.report(rpcInvalidMessage(fmt.Errorf("deliver mode %s is invalid for a direct message", mode)))
 			return
 		}
 		if err := n.dispatchLocalDirect(source, target, messageID, request.Payload); err != nil {
@@ -1129,13 +1205,13 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		source, target, messageID, decodeErr := decodeDeliverRequest(request)
+		source, target, messageID, mode, decodeErr := decodeDeliverRequest(request)
 		if decodeErr != nil {
 			releaseDeliverReceiveRequest(request)
 			n.respondRPCError(session, contextID, rpcInvalidMessage(decodeErr))
 			return
 		}
-		err = n.dispatchLocalRequest(source, target, messageID, request.Payload, func(responsePayload []byte, responseErr error) error {
+		responder := func(responsePayload []byte, responseErr error) error {
 			if responseErr != nil {
 				n.respondRPCError(session, contextID, responseErr)
 				return nil
@@ -1145,7 +1221,15 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 			respondErr := n.respondRPC(session, contextID, response)
 			releaseDeliverResponse(response)
 			return respondErr
-		})
+		}
+		switch mode {
+		case deliverRequestModeSync:
+			err = n.dispatchLocalRequestSync(source, target, messageID, request.Payload, responder)
+		case deliverRequestModeAsync:
+			err = n.dispatchLocalRequestAsync(source, target, messageID, request.Payload, responder)
+		default:
+			err = rpcInvalidMessage(fmt.Errorf("deliver mode %s is invalid for a request", mode))
+		}
 		releaseDeliverReceiveRequest(request)
 		if err != nil {
 			n.respondRPCError(session, contextID, err)
@@ -1155,20 +1239,20 @@ func (n *Node) handleRPCRequest(session xtnetNet.ISession, contextID int32, rpk 
 	}
 }
 
-func decodeDeliverRequest(request *rpcpb.DeliverRequest) (ServiceKey, ServiceKey, serviceMessageID, error) {
+func decodeDeliverRequest(request *rpcpb.DeliverRequest) (ServiceKey, ServiceKey, serviceMessageID, deliverRequestMode, error) {
 	source, err := serviceKeyFromProto(request.Source)
 	if err != nil {
-		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, fmt.Errorf("deliver source: %w", err)
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, 0, fmt.Errorf("deliver source: %w", err)
 	}
 	if source != (ServiceKey{}) && (source.Name == "" || source.ID <= 0) {
-		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, fmt.Errorf("deliver source is invalid: %s", source)
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, 0, fmt.Errorf("deliver source is invalid: %s", source)
 	}
 	target, err := requiredRPCServiceKey(request.Target, "deliver target")
 	if err != nil {
-		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, err
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, 0, err
 	}
 	if request.MessageId != 0 && request.StringMessageId != "" {
-		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, fmt.Errorf("deliver contains both numeric and string message ids")
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, 0, fmt.Errorf("deliver contains both numeric and string message ids")
 	}
 	var messageID serviceMessageID
 	if request.StringMessageId != "" {
@@ -1177,9 +1261,15 @@ func decodeDeliverRequest(request *rpcpb.DeliverRequest) (ServiceKey, ServiceKey
 		messageID = numericServiceMessageID(request.MessageId)
 	}
 	if err := messageID.validate(); err != nil {
-		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, fmt.Errorf("deliver message id: %w", err)
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, 0, fmt.Errorf("deliver message id: %w", err)
 	}
-	return source, target, messageID, nil
+	mode := request.GetMode()
+	switch mode {
+	case deliverRequestModeDirect, deliverRequestModeSync, deliverRequestModeAsync:
+		return source, target, messageID, mode, nil
+	default:
+		return ServiceKey{}, ServiceKey{}, serviceMessageID{}, 0, fmt.Errorf("deliver mode %d is invalid", mode)
+	}
 }
 
 func requiredRPCServiceKey(message *rpcpb.ServiceKey, name string) (ServiceKey, error) {

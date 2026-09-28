@@ -143,6 +143,58 @@ func (ServiceDiscoveryEventType) EnumDescriptor() ([]byte, []int) {
 	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{1}
 }
 
+type DeliverRequestMode int32
+
+const (
+	DeliverRequestMode_DELIVER_REQUEST_MODE_UNSPECIFIED DeliverRequestMode = 0
+	DeliverRequestMode_DELIVER_REQUEST_MODE_DIRECT      DeliverRequestMode = 1
+	DeliverRequestMode_DELIVER_REQUEST_MODE_SYNC        DeliverRequestMode = 2
+	DeliverRequestMode_DELIVER_REQUEST_MODE_ASYNC       DeliverRequestMode = 3
+)
+
+// Enum value maps for DeliverRequestMode.
+var (
+	DeliverRequestMode_name = map[int32]string{
+		0: "DELIVER_REQUEST_MODE_UNSPECIFIED",
+		1: "DELIVER_REQUEST_MODE_DIRECT",
+		2: "DELIVER_REQUEST_MODE_SYNC",
+		3: "DELIVER_REQUEST_MODE_ASYNC",
+	}
+	DeliverRequestMode_value = map[string]int32{
+		"DELIVER_REQUEST_MODE_UNSPECIFIED": 0,
+		"DELIVER_REQUEST_MODE_DIRECT":      1,
+		"DELIVER_REQUEST_MODE_SYNC":        2,
+		"DELIVER_REQUEST_MODE_ASYNC":       3,
+	}
+)
+
+func (x DeliverRequestMode) Enum() *DeliverRequestMode {
+	p := new(DeliverRequestMode)
+	*p = x
+	return p
+}
+
+func (x DeliverRequestMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DeliverRequestMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_rpcpb_rpc_proto_enumTypes[2].Descriptor()
+}
+
+func (DeliverRequestMode) Type() protoreflect.EnumType {
+	return &file_internal_rpcpb_rpc_proto_enumTypes[2]
+}
+
+func (x DeliverRequestMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DeliverRequestMode.Descriptor instead.
+func (DeliverRequestMode) EnumDescriptor() ([]byte, []int) {
+	return file_internal_rpcpb_rpc_proto_rawDescGZIP(), []int{2}
+}
+
 type RpcEnvelope struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Operation     RpcOperation           `protobuf:"varint,1,opt,name=operation,proto3,enum=xtframework.rpc.RpcOperation" json:"operation,omitempty"`
@@ -990,6 +1042,7 @@ type DeliverRequest struct {
 	MessageId       uint32                 `protobuf:"varint,3,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
 	StringMessageId string                 `protobuf:"bytes,4,opt,name=string_message_id,json=stringMessageId,proto3" json:"string_message_id,omitempty"`
 	Payload         []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
+	Mode            DeliverRequestMode     `protobuf:"varint,6,opt,name=mode,proto3,enum=xtframework.rpc.DeliverRequestMode" json:"mode,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -1057,6 +1110,13 @@ func (x *DeliverRequest) GetPayload() []byte {
 		return x.Payload
 	}
 	return nil
+}
+
+func (x *DeliverRequest) GetMode() DeliverRequestMode {
+	if x != nil {
+		return x.Mode
+	}
+	return DeliverRequestMode_DELIVER_REQUEST_MODE_UNSPECIFIED
 }
 
 type DeliverResponse struct {
@@ -1157,14 +1217,15 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"\fservice_name\x18\x02 \x01(\tR\vserviceName\x12I\n" +
 	"\n" +
 	"event_type\x18\x03 \x01(\x0e2*.xtframework.rpc.ServiceDiscoveryEventTypeR\teventType\x127\n" +
-	"\bservices\x18\x04 \x03(\v2\x1b.xtframework.rpc.ServiceKeyR\bservices\"\xdf\x01\n" +
+	"\bservices\x18\x04 \x03(\v2\x1b.xtframework.rpc.ServiceKeyR\bservices\"\x98\x02\n" +
 	"\x0eDeliverRequest\x123\n" +
 	"\x06source\x18\x01 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06source\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.xtframework.rpc.ServiceKeyR\x06target\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x03 \x01(\rR\tmessageId\x12*\n" +
 	"\x11string_message_id\x18\x04 \x01(\tR\x0fstringMessageId\x12\x18\n" +
-	"\apayload\x18\x05 \x01(\fR\apayload\"+\n" +
+	"\apayload\x18\x05 \x01(\fR\apayload\x127\n" +
+	"\x04mode\x18\x06 \x01(\x0e2#.xtframework.rpc.DeliverRequestModeR\x04mode\"+\n" +
 	"\x0fDeliverResponse\x12\x18\n" +
 	"\apayload\x18\x01 \x01(\fR\apayload*\xc0\x02\n" +
 	"\fRpcOperation\x12\x1d\n" +
@@ -1182,7 +1243,12 @@ const file_internal_rpcpb_rpc_proto_rawDesc = "" +
 	"(SERVICE_DISCOVERY_EVENT_TYPE_UNSPECIFIED\x10\x00\x12)\n" +
 	"%SERVICE_DISCOVERY_EVENT_TYPE_SNAPSHOT\x10\x01\x12'\n" +
 	"#SERVICE_DISCOVERY_EVENT_TYPE_ONLINE\x10\x02\x12(\n" +
-	"$SERVICE_DISCOVERY_EVENT_TYPE_OFFLINE\x10\x03B\x1cZ\x1axtframework/internal/rpcpbb\x06proto3"
+	"$SERVICE_DISCOVERY_EVENT_TYPE_OFFLINE\x10\x03*\x9a\x01\n" +
+	"\x12DeliverRequestMode\x12$\n" +
+	" DELIVER_REQUEST_MODE_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bDELIVER_REQUEST_MODE_DIRECT\x10\x01\x12\x1d\n" +
+	"\x19DELIVER_REQUEST_MODE_SYNC\x10\x02\x12\x1e\n" +
+	"\x1aDELIVER_REQUEST_MODE_ASYNC\x10\x03B\x1cZ\x1axtframework/internal/rpcpbb\x06proto3"
 
 var (
 	file_internal_rpcpb_rpc_proto_rawDescOnce sync.Once
@@ -1196,50 +1262,52 @@ func file_internal_rpcpb_rpc_proto_rawDescGZIP() []byte {
 	return file_internal_rpcpb_rpc_proto_rawDescData
 }
 
-var file_internal_rpcpb_rpc_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_internal_rpcpb_rpc_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_internal_rpcpb_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_internal_rpcpb_rpc_proto_goTypes = []any{
 	(RpcOperation)(0),              // 0: xtframework.rpc.RpcOperation
 	(ServiceDiscoveryEventType)(0), // 1: xtframework.rpc.ServiceDiscoveryEventType
-	(*RpcEnvelope)(nil),            // 2: xtframework.rpc.RpcEnvelope
-	(*RpcResult)(nil),              // 3: xtframework.rpc.RpcResult
-	(*ServiceKey)(nil),             // 4: xtframework.rpc.ServiceKey
-	(*ServiceLocation)(nil),        // 5: xtframework.rpc.ServiceLocation
-	(*RegisterNodeRequest)(nil),    // 6: xtframework.rpc.RegisterNodeRequest
-	(*RegisterNodeResponse)(nil),   // 7: xtframework.rpc.RegisterNodeResponse
-	(*HeartbeatRequest)(nil),       // 8: xtframework.rpc.HeartbeatRequest
-	(*HeartbeatResponse)(nil),      // 9: xtframework.rpc.HeartbeatResponse
-	(*RegisterRequest)(nil),        // 10: xtframework.rpc.RegisterRequest
-	(*RegisterResponse)(nil),       // 11: xtframework.rpc.RegisterResponse
-	(*UnregisterRequest)(nil),      // 12: xtframework.rpc.UnregisterRequest
-	(*UnregisterResponse)(nil),     // 13: xtframework.rpc.UnregisterResponse
-	(*LookupRequest)(nil),          // 14: xtframework.rpc.LookupRequest
-	(*LookupResponse)(nil),         // 15: xtframework.rpc.LookupResponse
-	(*RouteInvalidate)(nil),        // 16: xtframework.rpc.RouteInvalidate
-	(*SubscribeRequest)(nil),       // 17: xtframework.rpc.SubscribeRequest
-	(*SubscribeResponse)(nil),      // 18: xtframework.rpc.SubscribeResponse
-	(*ServiceDiscovery)(nil),       // 19: xtframework.rpc.ServiceDiscovery
-	(*DeliverRequest)(nil),         // 20: xtframework.rpc.DeliverRequest
-	(*DeliverResponse)(nil),        // 21: xtframework.rpc.DeliverResponse
+	(DeliverRequestMode)(0),        // 2: xtframework.rpc.DeliverRequestMode
+	(*RpcEnvelope)(nil),            // 3: xtframework.rpc.RpcEnvelope
+	(*RpcResult)(nil),              // 4: xtframework.rpc.RpcResult
+	(*ServiceKey)(nil),             // 5: xtframework.rpc.ServiceKey
+	(*ServiceLocation)(nil),        // 6: xtframework.rpc.ServiceLocation
+	(*RegisterNodeRequest)(nil),    // 7: xtframework.rpc.RegisterNodeRequest
+	(*RegisterNodeResponse)(nil),   // 8: xtframework.rpc.RegisterNodeResponse
+	(*HeartbeatRequest)(nil),       // 9: xtframework.rpc.HeartbeatRequest
+	(*HeartbeatResponse)(nil),      // 10: xtframework.rpc.HeartbeatResponse
+	(*RegisterRequest)(nil),        // 11: xtframework.rpc.RegisterRequest
+	(*RegisterResponse)(nil),       // 12: xtframework.rpc.RegisterResponse
+	(*UnregisterRequest)(nil),      // 13: xtframework.rpc.UnregisterRequest
+	(*UnregisterResponse)(nil),     // 14: xtframework.rpc.UnregisterResponse
+	(*LookupRequest)(nil),          // 15: xtframework.rpc.LookupRequest
+	(*LookupResponse)(nil),         // 16: xtframework.rpc.LookupResponse
+	(*RouteInvalidate)(nil),        // 17: xtframework.rpc.RouteInvalidate
+	(*SubscribeRequest)(nil),       // 18: xtframework.rpc.SubscribeRequest
+	(*SubscribeResponse)(nil),      // 19: xtframework.rpc.SubscribeResponse
+	(*ServiceDiscovery)(nil),       // 20: xtframework.rpc.ServiceDiscovery
+	(*DeliverRequest)(nil),         // 21: xtframework.rpc.DeliverRequest
+	(*DeliverResponse)(nil),        // 22: xtframework.rpc.DeliverResponse
 }
 var file_internal_rpcpb_rpc_proto_depIdxs = []int32{
 	0,  // 0: xtframework.rpc.RpcEnvelope.operation:type_name -> xtframework.rpc.RpcOperation
-	5,  // 1: xtframework.rpc.RegisterRequest.location:type_name -> xtframework.rpc.ServiceLocation
-	4,  // 2: xtframework.rpc.UnregisterRequest.target:type_name -> xtframework.rpc.ServiceKey
-	4,  // 3: xtframework.rpc.LookupRequest.target:type_name -> xtframework.rpc.ServiceKey
-	5,  // 4: xtframework.rpc.LookupResponse.location:type_name -> xtframework.rpc.ServiceLocation
-	4,  // 5: xtframework.rpc.RouteInvalidate.target:type_name -> xtframework.rpc.ServiceKey
-	4,  // 6: xtframework.rpc.SubscribeRequest.subscriber:type_name -> xtframework.rpc.ServiceKey
-	4,  // 7: xtframework.rpc.ServiceDiscovery.subscriber:type_name -> xtframework.rpc.ServiceKey
+	6,  // 1: xtframework.rpc.RegisterRequest.location:type_name -> xtframework.rpc.ServiceLocation
+	5,  // 2: xtframework.rpc.UnregisterRequest.target:type_name -> xtframework.rpc.ServiceKey
+	5,  // 3: xtframework.rpc.LookupRequest.target:type_name -> xtframework.rpc.ServiceKey
+	6,  // 4: xtframework.rpc.LookupResponse.location:type_name -> xtframework.rpc.ServiceLocation
+	5,  // 5: xtframework.rpc.RouteInvalidate.target:type_name -> xtframework.rpc.ServiceKey
+	5,  // 6: xtframework.rpc.SubscribeRequest.subscriber:type_name -> xtframework.rpc.ServiceKey
+	5,  // 7: xtframework.rpc.ServiceDiscovery.subscriber:type_name -> xtframework.rpc.ServiceKey
 	1,  // 8: xtframework.rpc.ServiceDiscovery.event_type:type_name -> xtframework.rpc.ServiceDiscoveryEventType
-	4,  // 9: xtframework.rpc.ServiceDiscovery.services:type_name -> xtframework.rpc.ServiceKey
-	4,  // 10: xtframework.rpc.DeliverRequest.source:type_name -> xtframework.rpc.ServiceKey
-	4,  // 11: xtframework.rpc.DeliverRequest.target:type_name -> xtframework.rpc.ServiceKey
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	5,  // 9: xtframework.rpc.ServiceDiscovery.services:type_name -> xtframework.rpc.ServiceKey
+	5,  // 10: xtframework.rpc.DeliverRequest.source:type_name -> xtframework.rpc.ServiceKey
+	5,  // 11: xtframework.rpc.DeliverRequest.target:type_name -> xtframework.rpc.ServiceKey
+	2,  // 12: xtframework.rpc.DeliverRequest.mode:type_name -> xtframework.rpc.DeliverRequestMode
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_internal_rpcpb_rpc_proto_init() }
@@ -1252,7 +1320,7 @@ func file_internal_rpcpb_rpc_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_rpcpb_rpc_proto_rawDesc), len(file_internal_rpcpb_rpc_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,

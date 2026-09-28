@@ -120,11 +120,11 @@ func TestRPCOperationRequestsRoundTrip(t *testing.T) {
 		},
 		{
 			name: "deliver", op: opDeliver,
-			message: &rpcpb.DeliverRequest{Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, MessageId: 42, Payload: []byte{1}},
+			message: &rpcpb.DeliverRequest{Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, MessageId: 42, Payload: []byte{1}, Mode: deliverRequestModeSync},
 		},
 		{
 			name: "deliver-string", op: opDeliver,
-			message: &rpcpb.DeliverRequest{Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, StringMessageId: "player.join", Payload: []byte{1}},
+			message: &rpcpb.DeliverRequest{Source: &rpcpb.ServiceKey{}, Target: &rpcpb.ServiceKey{Name: "room", Id: 1}, StringMessageId: "player.join", Payload: []byte{1}, Mode: deliverRequestModeAsync},
 		},
 		{
 			name: "route-invalidate", op: opRouteInvalidate,
@@ -175,23 +175,27 @@ func TestDecodeDeliverRequestValidatesMessageID(t *testing.T) {
 		Source:    &rpcpb.ServiceKey{},
 		Target:    &rpcpb.ServiceKey{Name: "room", Id: 1},
 		MessageId: 42,
+		Mode:      deliverRequestModeSync,
 	}
 
-	_, _, messageID, err := decodeDeliverRequest(request)
+	_, _, messageID, mode, err := decodeDeliverRequest(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if messageID.kind != serviceMessageIDNumeric || messageID.number != 42 {
 		t.Fatalf("message id = %+v, want numeric 42", messageID)
 	}
+	if mode != deliverRequestModeSync {
+		t.Fatalf("deliver mode = %v, want sync", mode)
+	}
 
 	request.MessageId = 0
-	if _, _, _, err := decodeDeliverRequest(request); err == nil {
+	if _, _, _, _, err := decodeDeliverRequest(request); err == nil {
 		t.Fatal("deliver request with zero message id was accepted")
 	}
 
 	request.StringMessageId = "player.join"
-	_, _, messageID, err = decodeDeliverRequest(request)
+	_, _, messageID, _, err = decodeDeliverRequest(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,19 +204,29 @@ func TestDecodeDeliverRequestValidatesMessageID(t *testing.T) {
 	}
 
 	request.MessageId = 42
-	if _, _, _, err := decodeDeliverRequest(request); err == nil {
+	if _, _, _, _, err := decodeDeliverRequest(request); err == nil {
 		t.Fatal("deliver request with both message id forms was accepted")
 	}
 
 	request.MessageId = 0
 	request.StringMessageId = strings.Repeat("x", maxStringMessageIDSize+1)
-	if _, _, _, err := decodeDeliverRequest(request); !errors.Is(err, ErrInvalidMessage) {
+	if _, _, _, _, err := decodeDeliverRequest(request); !errors.Is(err, ErrInvalidMessage) {
 		t.Fatalf("oversized string message id error = %v", err)
 	}
 
 	request.StringMessageId = string([]byte{0xff})
-	if _, _, _, err := decodeDeliverRequest(request); !errors.Is(err, ErrInvalidMessage) {
+	if _, _, _, _, err := decodeDeliverRequest(request); !errors.Is(err, ErrInvalidMessage) {
 		t.Fatalf("invalid UTF-8 message id error = %v", err)
+	}
+
+	request.StringMessageId = "player.join"
+	request.Mode = rpcpb.DeliverRequestMode_DELIVER_REQUEST_MODE_UNSPECIFIED
+	if _, _, _, _, err := decodeDeliverRequest(request); err == nil {
+		t.Fatal("deliver request without a mode was accepted")
+	}
+	request.Mode = rpcpb.DeliverRequestMode(99)
+	if _, _, _, _, err := decodeDeliverRequest(request); err == nil {
+		t.Fatal("deliver request with an unknown mode was accepted")
 	}
 }
 
@@ -222,7 +236,7 @@ func TestDeliverProtocolPoolsResetStateAndPreserveReturnedPayloads(t *testing.T)
 	requestPayload := []byte("request")
 
 	request := acquireDeliverSendRequest()
-	initializeDeliverRequest(request, source, target, stringServiceMessageID("player.join"), requestPayload)
+	initializeDeliverRequest(request, source, target, stringServiceMessageID("player.join"), requestPayload, deliverRequestModeAsync)
 	encoded, err := proto.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
@@ -245,6 +259,9 @@ func TestDeliverProtocolPoolsResetStateAndPreserveReturnedPayloads(t *testing.T)
 	if decoded.StringMessageId != "player.join" || !bytes.Equal(decoded.Payload, requestPayload) {
 		t.Fatalf("decoded request = %+v", decoded)
 	}
+	if decoded.Mode != deliverRequestModeAsync {
+		t.Fatalf("decoded mode = %v, want async", decoded.Mode)
+	}
 	retainedRequestPayload := decoded.Payload
 	releaseDeliverReceiveRequest(decoded)
 	if !bytes.Equal(retainedRequestPayload, requestPayload) {
@@ -258,7 +275,8 @@ func TestDeliverProtocolPoolsResetStateAndPreserveReturnedPayloads(t *testing.T)
 	}
 	if cleanRequest.Source.Name != "" || cleanRequest.Source.Id != 0 ||
 		cleanRequest.Target.Name != "" || cleanRequest.Target.Id != 0 ||
-		cleanRequest.MessageId != 0 || cleanRequest.StringMessageId != "" || cleanRequest.Payload != nil {
+		cleanRequest.MessageId != 0 || cleanRequest.StringMessageId != "" || cleanRequest.Payload != nil ||
+		cleanRequest.Mode != rpcpb.DeliverRequestMode_DELIVER_REQUEST_MODE_UNSPECIFIED {
 		t.Fatalf("pooled request retained state: %+v", cleanRequest)
 	}
 	releaseDeliverSendRequest(cleanRequest)
@@ -266,6 +284,7 @@ func TestDeliverProtocolPoolsResetStateAndPreserveReturnedPayloads(t *testing.T)
 	missingSourceWire, err := proto.Marshal(&rpcpb.DeliverRequest{
 		Target:    &rpcpb.ServiceKey{Name: "room", Id: 7},
 		MessageId: 1,
+		Mode:      deliverRequestModeSync,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +294,7 @@ func TestDeliverProtocolPoolsResetStateAndPreserveReturnedPayloads(t *testing.T)
 		releaseDeliverReceiveRequest(missingSource)
 		t.Fatal(err)
 	}
-	_, _, _, decodeErr := decodeDeliverRequest(missingSource)
+	_, _, _, _, decodeErr := decodeDeliverRequest(missingSource)
 	releaseDeliverReceiveRequest(missingSource)
 	if decodeErr == nil {
 		t.Fatal("pooled decoder accepted a deliver request without source presence")
