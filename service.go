@@ -13,8 +13,8 @@ type Factory func(node *Node, config ServiceConfig) (Service, error)
 // ServiceCallCallback 用于接收异步 Service 调用的结果。
 type ServiceCallCallback func(payload []byte, err error)
 
-// ServiceRespondFunc completes an asynchronous Service request. It may be
-// called after the handler returns, but only the first call is accepted.
+// ServiceRespondFunc 用于完成异步 Service 请求。处理器返回后仍可调用，
+// 但只有第一次调用会被接受。
 type ServiceRespondFunc func(payload []byte, err error)
 
 type Service interface {
@@ -198,7 +198,8 @@ func (s *BaseService) Send2ServiceString(serviceName string, serviceID int, mess
 
 // CallServiceAsync 异步调用另一个 Service。返回 nil 表示请求已被接受；调用完成后，
 // callback 会被投递到当前 Service 的 Loop 中执行。返回非 nil 错误时不会调用 callback。
-// Node 配置的 Service 调用超时只约束远端 RPC，本地 Service 调用不计算超时。
+// Node 停止时，尚未完成的本地调用可能不再执行 callback。
+// Node 配置的 Service 调用超时同时约束本地和远端调用。
 func (s *BaseService) CallServiceAsync(serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
@@ -256,8 +257,7 @@ type MessageContext struct {
 func (c MessageContext) Source() ServiceKey { return c.source }
 func (c MessageContext) Target() ServiceKey { return c.target }
 
-// Respond completes an asynchronous request. It returns an error when the
-// context belongs to a direct or synchronous message and cannot respond.
+// Respond 完成异步请求。如果当前上下文属于单向消息或同步请求，无法响应时返回错误。
 func (c MessageContext) Respond(payload []byte, err error) error {
 	if c.respond == nil {
 		return fmt.Errorf("message context cannot respond")

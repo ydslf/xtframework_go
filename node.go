@@ -163,6 +163,10 @@ type Node struct {
 	controlTimeWheel *xttimer.TimeWheel
 	controlStarted   bool
 
+	serviceCallTimeWheel *xttimer.TimeWheel
+	serviceCallStop      chan struct{}
+	serviceCallStopOnce  sync.Once
+
 	clientsMu      sync.RWMutex
 	rpcClients     map[int]*RPCClient //所有node保存的连接远端node的RPCClient
 	routeCache     *serviceRouteCache //非主node保存的非本地service地址
@@ -173,7 +177,7 @@ type Node struct {
 	mainRecoveryStop     chan struct{}
 	mainRecoveryStopOnce sync.Once
 
-	shutdownMutex sync.Mutex
+	lifecycleMu sync.Mutex
 }
 
 func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error) {
@@ -282,6 +286,7 @@ func NewNode(config *Config, nodeID int, optionList ...NodeOption) (*Node, error
 		localServices:          make(map[ServiceKey]*serviceRuntime),
 		remoteNodes:            make(map[int]*RemoteNode),
 		controlLoop:            frame.NewLoop(frame.LoopSizeMin, true),
+		serviceCallStop:        make(chan struct{}),
 	}
 	node.state.Store(nodeStateInitial)
 
@@ -370,9 +375,17 @@ func (n *Node) RPCClientCount() int {
 }
 
 func (n *Node) Start() error {
-	if !n.state.CompareAndSwap(nodeStateInitial, nodeStateStarting) {
+	n.lifecycleMu.Lock()
+	if n.state.Load() != nodeStateInitial {
+		n.lifecycleMu.Unlock()
 		return ErrNodeRunning
 	}
+	// 在调用方能够观察到 Starting 状态前发布不可变的时间轮指针。
+	// Stop 只关闭时间轮，不再改写该指针。
+	n.startServiceCallTimeWheel()
+	n.state.Store(nodeStateStarting)
+	n.lifecycleMu.Unlock()
+
 	n.startControlLoop()
 	n.startMainRecoveryLoop()
 
@@ -422,6 +435,24 @@ func (n *Node) stopControlLoop() {
 	n.controlLoop.Close(false)
 	n.controlLoopWG.Wait()
 	n.controlStarted = false
+}
+
+func (n *Node) startServiceCallTimeWheel() {
+	n.serviceCallTimeWheel = xttimer.NewTimeWheel(frame.NewDirectDispatcher(), 0)
+}
+
+func (n *Node) newServiceCallTimer() (*xttimer.WheelTimer, error) {
+	if !n.operational() || n.serviceCallTimeWheel == nil {
+		return nil, ErrNodeStopped
+	}
+	return n.serviceCallTimeWheel.NewTimer(), nil
+}
+
+func (n *Node) stopServiceCallTimeWheel() {
+	n.serviceCallStopOnce.Do(func() { close(n.serviceCallStop) })
+	if n.serviceCallTimeWheel != nil {
+		n.serviceCallTimeWheel.Close()
+	}
 }
 
 func (n *Node) startRPCServer() error {
@@ -596,8 +627,9 @@ func (n *Node) send2Service(source, target ServiceKey, messageID serviceMessageI
 }
 
 // CallServiceAsync 异步调用一个 Service。返回 nil 表示请求已被接受，callback 将在独立
-// goroutine 中执行且只执行一次。返回非 nil 错误时不会调用 callback。
-// Node 配置的 Service 调用超时只约束远端 RPC，本地 Service 调用不计算超时。
+// goroutine 中至多执行一次。返回非 nil 错误时不会调用 callback；Node 停止时，
+// 尚未完成的本地调用可能不再执行 callback。
+// Node 配置的 Service 调用超时同时约束本地和远端调用。
 func (n *Node) CallServiceAsync(serviceName string, serviceID int, messageID uint32, payload []byte, callback ServiceCallCallback) error {
 	if callback == nil {
 		return fmt.Errorf("service call callback is nil")
@@ -642,13 +674,17 @@ func (n *Node) callServiceAsync(source, target ServiceKey, messageID serviceMess
 		return fmt.Errorf("service call callback is nil")
 	}
 	if _, local := n.localServices[target]; local {
+		timer, err := n.newServiceCallTimer()
+		if err != nil {
+			return err
+		}
 		var completed atomic.Bool
-		timer := time.AfterFunc(n.serviceCallTimeout, func() {
+		timer.Start(n.serviceCallTimeout, 0, func() {
 			if completed.CompareAndSwap(false, true) {
 				callback(nil, fmt.Errorf("call service %s: timeout after %s", target, n.serviceCallTimeout))
 			}
 		})
-		err := n.dispatchLocalRequestAsync(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
+		err = n.dispatchLocalRequestAsync(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
 			if !completed.CompareAndSwap(false, true) {
 				return fmt.Errorf("response arrived after call completion")
 			}
@@ -722,20 +758,38 @@ func (n *Node) callServiceSync(source, target ServiceKey, messageID serviceMessa
 			err     error
 		}
 		responses := make(chan localResponse, 1)
-		err := n.dispatchLocalRequestSync(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
+		timer, err := n.newServiceCallTimer()
+		if err != nil {
+			return nil, err
+		}
+		var completed atomic.Bool
+		timer.Start(n.serviceCallTimeout, 0, func() {
+			if completed.CompareAndSwap(false, true) {
+				responses <- localResponse{err: fmt.Errorf("call service %s: timeout after %s", target, n.serviceCallTimeout)}
+			}
+		})
+		err = n.dispatchLocalRequestSync(source, target, messageID, payload, func(responsePayload []byte, responseErr error) error {
+			if !completed.CompareAndSwap(false, true) {
+				return fmt.Errorf("response arrived after call completion")
+			}
+			timer.Stop()
 			responses <- localResponse{payload: responsePayload, err: responseErr}
 			return nil
 		})
 		if err != nil {
+			if completed.CompareAndSwap(false, true) {
+				timer.Stop()
+			}
 			return nil, err
 		}
-		timer := time.NewTimer(n.serviceCallTimeout)
-		defer timer.Stop()
 		select {
 		case response := <-responses:
 			return response.payload, response.err
-		case <-timer.C:
-			return nil, fmt.Errorf("call service %s: timeout after %s", target, n.serviceCallTimeout)
+		case <-n.serviceCallStop:
+			if completed.CompareAndSwap(false, true) {
+				timer.Stop()
+			}
+			return nil, ErrNodeStopped
 		}
 	}
 
@@ -1528,9 +1582,10 @@ func (n *Node) report(err error) {
 }
 
 func (n *Node) Stop() error {
-	n.shutdownMutex.Lock()
-	defer n.shutdownMutex.Unlock()
+	n.lifecycleMu.Lock()
+	defer n.lifecycleMu.Unlock()
 	if n.state.CompareAndSwap(nodeStateInitial, nodeStateStopped) {
+		n.stopServiceCallTimeWheel()
 		n.releaseLogger()
 		return nil
 	}
@@ -1541,6 +1596,7 @@ func (n *Node) Stop() error {
 		}
 		return ErrNodeStopped
 	}
+	n.stopServiceCallTimeWheel()
 	n.stopMainRecovery()
 
 	var errs []error
@@ -1619,6 +1675,7 @@ func (n *Node) closeNetwork() {
 }
 
 func (n *Node) rollbackStart() {
+	n.stopServiceCallTimeWheel()
 	n.stopMainRecovery()
 	for i := len(n.serviceOrder) - 1; i >= 0; i-- {
 		runtime := n.localServices[n.serviceOrder[i]]

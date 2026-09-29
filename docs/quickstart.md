@@ -44,7 +44,7 @@ err := service.CallServiceAsync(
 )
 ```
 
-目标 Service 在 `HandleRPCRequestAsync` 中调用 `MessageContext.Respond` 返回响应负载和错误；响应不携带消息号。处理器 panic 或响应错误都会转换为调用错误。响应后不得再修改或复用响应负载。`CallServiceAsync` 不阻塞，回调会投递回调用方 Service 的 Loop；返回错误表示请求未发起，此时不会执行回调。Service 调用超时通过 Node 的 `service_call_timeout` 配置，默认值为 `3s`，也可通过 `WithServiceCallTimeout` 覆盖 YAML。为避免本地高频调用产生定时器开销，异步本地调用不计算超时；`CallServiceSync` 的本地和远端调用都会等待结果或超时，不应在需要保持响应的 Service Loop 中使用。
+目标 Service 在 `HandleRPCRequestAsync` 中调用 `MessageContext.Respond` 返回响应负载和错误；响应不携带消息号。处理器 panic 或响应错误都会转换为调用错误。响应后不得再修改或复用响应负载。`CallServiceAsync` 不阻塞，回调会投递回调用方 Service 的 Loop；返回错误表示请求未发起，此时不会执行回调。Node 停止时，尚未完成的本地异步调用允许丢弃回调。Service 调用超时通过 Node 的 `service_call_timeout` 配置，默认值为 `3s`，也可通过 `WithServiceCallTimeout` 覆盖 YAML。本地同步和异步调用使用 Node 独立的时间轮计时，远端调用使用 xtnet RPC 的时间轮；`CallServiceSync` 会阻塞等待结果或超时，不应在需要保持响应的 Service Loop 中使用。
 
 ## 应用层编解码
 
